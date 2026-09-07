@@ -1,0 +1,33 @@
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test / generated WAV files (keep only source code)
+*.wav
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+*.swp
+*.swo
+
+# Logs
+*.log
