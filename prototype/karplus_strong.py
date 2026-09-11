@@ -58,3 +58,38 @@ class DifferentiableKarplusStrong(nn.Module):
             y.append(delayed * decay)
 
         return torch.stack(y)
+
+
+class MultiVoiceKarplusStrong(nn.Module):
+    """
+    Multiple independent Karplus-Strong string models whose outputs are summed.
+
+    Each voice has its own pitch, decay, and energy parameters. During
+    optimisation the pitches are typically frozen while decay and energy 
+    are jointly trained against the mixed target audio.
+    """
+
+    def __init__(self, num_voices: int, sample_rate: int = 16000, duration: float = 1.0):
+        super().__init__()
+        self.num_voices = num_voices
+        self.voices = nn.ModuleList([
+            DifferentiableKarplusStrong(sample_rate, duration)
+            for _ in range(num_voices)
+        ])
+
+    def forward(self) -> torch.Tensor:
+        """Return the sum of all voice signals, length = num_samples."""
+        if self.num_voices == 0:
+            return torch.zeros(0)
+            
+        outputs = [voice() for voice in self.voices]
+        
+        # Align lengths (they should match, but guard against off-by-one)
+        min_len = min(y.shape[0] for y in outputs)
+        
+        # Sum all outputs
+        mixed_signal = torch.zeros(min_len, device=outputs[0].device)
+        for y in outputs:
+            mixed_signal += y[:min_len]
+            
+        return mixed_signal

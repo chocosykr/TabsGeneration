@@ -55,3 +55,68 @@ def map_parameters_to_tab(optimized_pitch: float, optimized_decay: float) -> dic
         "fret": best_candidate["fret"],
         "all_candidates": candidates
     }
+
+
+def map_chord_to_tab(target_pitches_hz: list[float], strummed_strings: list[int]) -> dict:
+    """
+    Given a list of detected pitches and a list of strings that were physically strummed,
+    brute-force searches for an assignment of frets to exactly those strings such that 
+    the resulting set of notes perfectly matches the target pitches.
+    """
+    import itertools
+    
+    target_midis = {int(round(freq_to_midi(p))) for p in target_pitches_hz}
+    
+    valid_shapes = []
+    
+    # We evaluate all possible fret combinations for the strummed strings.
+    # To keep it fast, max fret is bounded. 16 frets ^ 4 strings = 65536 combinations.
+    frets_range = range(MAX_FRET + 1)
+    
+    for frets in itertools.product(frets_range, repeat=len(strummed_strings)):
+        generated_midis = set()
+        out_of_bounds = False
+        
+        for string_idx, fret in zip(strummed_strings, frets):
+            open_midi = int(round(freq_to_midi(UKULELE_TUNING[string_idx]["freq"])))
+            generated_midis.add(open_midi + fret)
+            
+        # The set of generated notes MUST EXACTLY EQUAL the set of target notes.
+        # (If 4 strings are strummed but only 3 pitches were detected, it means 
+        # one pitch must be doubled across two strings, which this handles beautifully).
+        if generated_midis == target_midis:
+            # Score the ergonomics of the shape
+            non_zero_frets = [f for f in frets if f > 0]
+            if not non_zero_frets:
+                span = 0
+            else:
+                span = max(non_zero_frets) - min(non_zero_frets)
+                
+            total_fret = sum(frets)
+            
+            valid_shapes.append({
+                "frets": frets,
+                "span": span,
+                "total_fret": total_fret
+            })
+            
+    if not valid_shapes:
+        return {"error": "No valid fingering found for these pitches on the specified strings."}
+        
+    # Sort by minimum span (hand stretch), then by lowest frets overall
+    valid_shapes.sort(key=lambda x: (x["span"], x["total_fret"]))
+    
+    best_shape = valid_shapes[0]
+    
+    # Format the result nicely
+    mapping = {}
+    for i, string_idx in enumerate(strummed_strings):
+        mapping[string_idx] = best_shape["frets"][i]
+        
+    return {
+        "target_pitches": target_pitches_hz,
+        "target_midis": list(target_midis),
+        "strummed_strings": strummed_strings,
+        "mapping": mapping,
+        "span": best_shape["span"]
+    }
