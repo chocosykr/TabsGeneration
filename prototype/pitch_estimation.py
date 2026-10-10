@@ -243,24 +243,35 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
                          sample_rate: int,
                          strummed_strings: List[int],
                          max_fret: int = 15,
-                         num_harmonics: int = 5) -> dict:
+                         num_harmonics: int = 5,
+                         top_n_multisets: int = 8,
+                         max_fret_span: int = 4) -> dict:
     """
-    Directly search over all possible chord shapes (fret combinations) on the
+    Search over all possible chord shapes (fret combinations) on the
     specified strummed strings and score each against the observed spectrum.
 
-    This avoids iterative harmonic suppression entirely. Instead, for each
-    candidate chord shape we compute the total spectral energy it explains —
-    the sum of FFT magnitudes across the union of every expected harmonic
-    bin of every string's note (each bin counted once).
+    Returns the best-scoring representative shape for each of the top
+    `top_n_multisets` distinct note *multisets* (sorted tuples of MIDI values).
+    Two shapes belong to the same multiset if they produce exactly the same
+    notes in the same quantities (e.g. G4-E4-G4-B4), even if those notes
+    are assigned to different strings.
 
-    For 4 strings × 16 frets this is 65,536 candidates, which runs in ~1 s.
+    This is critical for unison handling: the multiset {E4, G4, G4, B4}
+    is different from {E4, E4, G4, B4} — the former requires two G4 voices
+    from the optimizer, the latter requires two E4 voices.
+
+    `max_fret_span`: maximum allowed fret span across all fretted (non-open)
+    strings. A human hand can comfortably span at most 4 frets. Open strings
+    (fret 0) are excluded from the span calculation since they need no finger.
+    Set to a very large value to disable this constraint.
 
     Returns a dict with:
-      - 'mapping': {string_idx: fret, ...}
-      - 'pitches': [Hz, ...] for each strummed string
-      - 'score': total harmonic salience of the winning shape
+      - 'candidates': list of candidate dicts, one per distinct multiset,
+            each with 'mapping', 'pitches', 'frets', 'spectral_score',
+            'strummed_strings', and 'multiset_midis'.
+      - 'best': shortcut to candidates[0] (highest spectral score).
     """
-    from fretboard_mapper import UKULELE_TUNING
+    from fretboard_mapper import UKULELE_TUNING, freq_to_midi
     import itertools
 
     if audio_tensor.ndim > 1:
@@ -272,10 +283,9 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
     n_fft = 8192
     mag = np.abs(np.fft.rfft(y_window * np.hanning(len(y_window)), n=n_fft))
 
-    # Pre-compute open-string frequencies for the strummed strings
-    open_freqs = []
-    for s in strummed_strings:
-        open_freqs.append(UKULELE_TUNING[s]["freq"])
+    # Pre-compute open-string MIDI notes and frequencies
+    open_freqs = [UKULELE_TUNING[s]["freq"] for s in strummed_strings]
+    open_midis = [int(round(freq_to_midi(f))) for f in open_freqs]
 
     frets_range = range(max_fret + 1)
     num_strings = len(strummed_strings)
@@ -304,68 +314,160 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
                 low_bin = max(0, center_bin - search_radius)
                 high_bin = min(len(mag) - 1, center_bin + search_radius)
                 for b in range(low_bin, high_bin + 1):
-                    # A bin claimed by a higher harmonic stays a harmonic
-                    # (weaker claim); only upgrade it if an even higher
-                    # harmonic index claims it.
                     prev = bins.get(b, 0)
                     if h > prev:
                         bins[b] = h
             per_fret.append(bins)
         harm_bins.append(per_fret)
 
-    # Score each candidate shape by the TOTAL spectral energy it explains,
-    # counting each FFT bin only ONCE (union across all strings/harmonics)
-    # and discounting bins shared with higher harmonics (1 / harmonic index).
+    # Score each candidate shape by the TOTAL spectral energy it explains.
     #
-    # Union dedup: without it, shared harmonics get double-counted and a wrong
-    # shape can win — e.g. in C-major, G4's 2nd harmonic (784 Hz) lands on C4's
-    # 3rd harmonic (784.9 Hz), so a candidate G4 picks up C4's energy for free.
-    #
-    # Harmonic-index discount: with it, an octave-doubling shape (e.g. C5
-    # instead of a unison A4) can no longer steal the lower note's upper
-    # harmonics, because every bin it would claim is already claimed by the
-    # lower note's harmonic series.
-    best_score = -1.0
-    best_frets = None
+    # Key rules:
+    #   1. Each FFT bin is credited at most once per harmonic claim, using the
+    #      LOWEST harmonic index that claims it (strongest physical claim).
+    #   2. Unison doubling (two strings producing the same pitch) is REWARDED:
+    #      when a second string claims a bin at the SAME harmonic index, a
+    #      unison bonus is added. We keep this small (0.1) so the model doesn't
+    #      sacrifice real quiet notes just to double a loud note.
+    #   3. Ergonomic penalty: favours lower-fret shapes. This encodes the
+    #      physical prior that a player will use the lowest viable fingering
+    #      unless forced higher by the harmony. Tuned to overcome the raw
+    #      spectral reward of hallucinating a high-fret string.
+    #   4. Overtone discount: if a note in the candidate is a near-integer
+    #      harmonic of another note already in the candidate, its fundamental
+    #      spectral reward is multiplied by a discount factor. This is a
+    #      general acoustic law — if string A is already producing frequency
+    #      f, then 2f/3f/4f energy in the spectrum is already explained by A's
+    #      harmonic series, so a separate string B claiming 2f as its
+    #      fundamental should receive less credit.
+    _UNISON_BONUS    = 0.1   # fraction of original credit added for each unison claim
+    _ERGO_WEIGHT     = 0.5   # penalty per fret — strong enough to beat high-fret hallucinations
+    _OVERTONE_FACTOR = 0.25  # fundamental credit multiplier when a note is an overtone
+                             # of another note in the same candidate (0 = full suppression,
+                             # 1 = no discount); 0.25 retains partial credit since a real
+                             # string at 2f does add independent decay/energy even if
+                             # the frequency is shared with another string's overtone.
+    _OVERTONE_RATIO_TOLERANCE = 0.03  # fractional Hz tolerance for harmonic ratio check
+
+    # Track the best shape per distinct multiset.
+    # Key: sorted tuple of MIDI notes (the multiset).
+    # Value: (spectral_score, frets_tuple).
+    best_per_multiset: dict[tuple[int, ...], tuple[float, tuple[int, ...]]] = {}
 
     for frets in itertools.product(frets_range, repeat=num_strings):
-        covered = {}   # bin -> highest harmonic index claiming it
+        # --- Fret-span constraint ---
+        # A human hand can only comfortably fret notes within a ~4-fret window.
+        # Open strings (fret 0) don't require a finger, so they're excluded.
+        fretted = [f for f in frets if f > 0]
+        if fretted and (max(fretted) - min(fretted)) > max_fret_span:
+            continue
+
+
+        # --- Compute the fundamental frequencies for this candidate ---
+        candidate_freqs = [
+            open_freqs[i] * (2 ** (fret / 12.0))
+            for i, fret in enumerate(frets)
+        ]
+
+        # --- Overtone discount map ---
+        # For each string, check if its fundamental is a near-integer multiple
+        # of any OTHER string's fundamental in this candidate. If so, flag it
+        # for a discount — its energy is already partially explained.
+        overtone_discount = [1.0] * num_strings
+        for i, fi in enumerate(candidate_freqs):
+            for j, fj in enumerate(candidate_freqs):
+                if i == j:
+                    continue
+                # Is fi an integer harmonic of fj? i.e. fi ≈ n * fj for n=2,3,4...
+                ratio = fi / fj if fj > 0 else 0.0
+                nearest_int = round(ratio)
+                if nearest_int >= 2:
+                    if abs(ratio - nearest_int) / nearest_int < _OVERTONE_RATIO_TOLERANCE:
+                        # fi is approximately the nearest_int-th harmonic of fj.
+                        # Apply discount to string i's fundamental contribution.
+                        overtone_discount[i] = min(overtone_discount[i], _OVERTONE_FACTOR)
+                        break
+
+        covered = {}   # bin -> (harmonic_index, claim_count)
         score = 0.0
 
         for string_i, fret in enumerate(frets):
+            discount = overtone_discount[string_i]
             for b, h in harm_bins[string_i][fret].items():
+                # The fundamental bin (h==1) gets the overtone discount applied.
+                # Harmonic bins (h>1) are not discounted — they are independent
+                # acoustic evidence regardless of whether another string shares
+                # the fundamental frequency.
+                effective_weight = discount if h == 1 else 1.0
+
                 if b not in covered:
-                    covered[b] = h
-                    score += mag[b] / h
-                elif h > covered[b]:
-                    # A higher harmonic claims this bin too; the discount
-                    # gets weaker, so adjust the score accordingly.
-                    score -= mag[b] / covered[b]
-                    covered[b] = h
-                    score += mag[b] / h
+                    covered[b] = (h, 1)
+                    score += effective_weight * mag[b] / h
+                else:
+                    prev_h, prev_count = covered[b]
+                    if h == prev_h:
+                        covered[b] = (h, prev_count + 1)
+                        score += _UNISON_BONUS * effective_weight * mag[b] / h
+                    elif h < prev_h:
+                        # Upgrade the claim to a lower harmonic index (stronger)
+                        score -= mag[b] / prev_h
+                        score += effective_weight * mag[b] / h
+                        covered[b] = (h, 1)
 
-        if score > best_score:
-            best_score = score
-            best_frets = frets
+        score -= _ERGO_WEIGHT * sum(frets)
 
-    # Build result
-    mapping = {}
-    pitches = []
-    for i, s in enumerate(strummed_strings):
-        mapping[s] = best_frets[i]
-        pitches.append(open_freqs[i] * (2 ** (best_frets[i] / 12.0)))
+        # Compute the multiset key: sorted tuple of MIDI notes
+        multiset_key = tuple(sorted(
+            open_midis[i] + frets[i] for i in range(num_strings)
+        ))
 
-    # Also find a few runner-up shapes for logging
-    print(f"   Best chord shape score: {best_score:.2f}")
-    for i, s in enumerate(strummed_strings):
-        f = best_frets[i]
-        hz = pitches[i]
-        fret_str = str(f) if f > 0 else "0 (open)"
-        print(f"      String {s}: Fret {fret_str}  ({hz:.2f} Hz)")
+        prev = best_per_multiset.get(multiset_key)
+        if prev is None or score > prev[0]:
+            best_per_multiset[multiset_key] = (score, frets)
+
+    # Sort multisets by their best spectral score, descending
+    ranked_multisets = sorted(
+        best_per_multiset.items(),
+        key=lambda item: -item[1][0]
+    )
+
+    # Take the top N distinct multisets
+    top_multisets = ranked_multisets[:top_n_multisets]
+
+    # Normalize spectral scores to [0, 1] relative to the best
+    best_spectral = top_multisets[0][1][0] if top_multisets else 1.0
+
+    # Build candidate list
+    candidates = []
+    for multiset_key, (spectral_score, frets) in top_multisets:
+        mapping = {}
+        pitches = []
+        for i, s in enumerate(strummed_strings):
+            mapping[s] = frets[i]
+            pitches.append(open_freqs[i] * (2 ** (frets[i] / 12.0)))
+
+        candidates.append({
+            "mapping": mapping,
+            "pitches": pitches,
+            "frets": frets,
+            "strummed_strings": strummed_strings,
+            "spectral_score": spectral_score,
+            "spectral_score_norm": spectral_score / best_spectral if best_spectral > 0 else 0.0,
+            "multiset_midis": multiset_key,
+        })
+
+    # Log the top candidates
+    print(f"   Top {len(candidates)} distinct multisets (of "
+          f"{len(best_per_multiset)} total):")
+    _NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F',
+                   'F#', 'G', 'G#', 'A', 'A#', 'B']
+    for rank, c in enumerate(candidates, 1):
+        notes = [f"{_NOTE_NAMES[m % 12]}{m // 12 - 1}" for m in c["multiset_midis"]]
+        print(f"      #{rank}: frets={c['frets']}  notes=[{', '.join(notes)}]  "
+              f"spectral={c['spectral_score']:.1f}  "
+              f"norm={c['spectral_score_norm']:.3f}")
 
     return {
-        "mapping": mapping,
-        "pitches": pitches,
-        "strummed_strings": strummed_strings,
-        "score": best_score
+        "candidates": candidates,
+        "best": candidates[0] if candidates else None,
     }

@@ -4,6 +4,7 @@ from karplus_strong import DifferentiableKarplusStrong
 from tqdm import tqdm
 import math
 from typing import List
+from device_config import DEVICE
 
 # YIN is very accurate for clean single-note audio, so we trust it for pitch.
 # The optimizer is used only to refine decay and excitation (timbre), not pitch.
@@ -56,10 +57,10 @@ def optimize_parameters(target_audio: torch.Tensor, initial_pitch: float,
 
     # Only optimise the timbre parameters
     optimizer = torch.optim.Adam(
-        [model.logit_decay, model.log_energy], lr=lr
+        [model.logit_decay, model.log_energy, model.logit_stretch], lr=lr
     )
 
-    print(f"Starting optimisation  (pitch fixed at {initial_pitch:.2f} Hz, optimising decay/energy) ...")
+    print(f"Starting optimisation  (pitch fixed at {initial_pitch:.2f} Hz, optimising decay/energy/stretch) ...")
 
     for i in tqdm(range(num_iterations)):
         optimizer.zero_grad()
@@ -74,17 +75,17 @@ def optimize_parameters(target_audio: torch.Tensor, initial_pitch: float,
         optimizer.step()
 
         if (i + 1) % 10 == 0:
-            p, d, _ = model.get_params()
+            p, d, _, _ = model.get_params()
             print(f"  iter {i+1:3d}  loss={loss.item():.4f}  "
                   f"pitch={p.item():.2f} Hz  decay={d.item():.4f}")
 
     # For fretboard mapping, use the original YIN pitch (most reliable)
-    # Decay from optimizer gives timbre info for string disambiguation
-    _, decay, energy = model.get_params()
+    # Decay and stretch give timbre info for string disambiguation
+    _, decay, _, stretch = model.get_params()
     return {
         "pitch": initial_pitch,    # Use YIN estimate directly
         "decay": decay.item(),
-        "excitation_energy": energy.item(),
+        "inharmonicity": stretch.item(),
     }
 
 
@@ -98,8 +99,8 @@ def optimize_multi_parameters(target_audio: torch.Tensor,
     Adam optimisation loop that fits a multi-voice Karplus-Strong model to
     `target_audio` (a mixed signal of multiple simultaneous notes).
 
-    All pitches are frozen at the supplied `pitches` estimates. Only decay 
-    and excitation_energy for each voice are optimised.
+    All pitches are frozen at the supplied `pitches` estimates. Only decay,
+    excitation_energy, and stretch for each voice are optimised.
 
     `active_mask` (optional): a list of bools, one per voice. Voices marked
     False are simulated but kept SILENT (excitation energy frozen at ~0) —
@@ -112,7 +113,10 @@ def optimize_multi_parameters(target_audio: torch.Tensor,
         return []
     if active_mask is None:
         active_mask = [True] * num_voices
-        
+
+    # Move target to the configured device
+    target_audio = target_audio.to(DEVICE)
+
     duration = target_audio.shape[-1] / sample_rate
     from karplus_strong import MultiVoiceKarplusStrong
     model = MultiVoiceKarplusStrong(num_voices, sample_rate=sample_rate, duration=duration)
@@ -132,17 +136,18 @@ def optimize_multi_parameters(target_audio: torch.Tensor,
                 voice.log_energy.data.fill_(-20.0)
             voice.log_energy.requires_grad_(False)
             voice.logit_decay.requires_grad_(False)
+            voice.logit_stretch.requires_grad_(False)
             continue
         
         # Add trainable parameters to optimiser list
-        optim_params.extend([voice.logit_decay, voice.log_energy])
+        optim_params.extend([voice.logit_decay, voice.log_energy, voice.logit_stretch])
 
     # Jointly optimise the timbre parameters across all voices.
     optimizer = torch.optim.Adam(optim_params, lr=lr)
 
     pitch_str = ", ".join(f"{p:.2f} Hz" for p in pitches)
     print(f"Starting {num_voices}-voice optimisation "
-          f"(pitches: [{pitch_str}], optimising decay/energy for each) ...")
+          f"(pitches: [{pitch_str}], optimising decay/energy/stretch for each) ...")
 
     for i in tqdm(range(num_iterations)):
         optimizer.zero_grad()
@@ -151,7 +156,18 @@ def optimize_multi_parameters(target_audio: torch.Tensor,
         min_len = min(synth.shape[-1], target_audio.shape[-1])
         stft_loss = multi_scale_stft_loss(synth[:min_len],
                                           target_audio.squeeze()[:min_len])
-        stft_loss.backward()
+
+        # Add a penalty for muting strings (low decay) to prevent the optimizer
+        # from "hiding" wrong notes by dropping their acoustic energy.
+        decay_penalty = 0.0
+        for voice, active in zip(model.voices, active_mask):
+            if active:
+                _, decay, _, _ = voice.get_params()
+                # A decay of 0.95 or lower mutes the string extremely fast.
+                decay_penalty += torch.nn.functional.relu(0.95 - decay)
+                
+        loss = stft_loss + (10.0 * decay_penalty)
+        loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -159,17 +175,17 @@ def optimize_multi_parameters(target_audio: torch.Tensor,
         if (i + 1) % 10 == 0:
             decays = [v.get_params()[1].item() for v in model.voices]
             decay_str = ", ".join(f"d{v+1}={decays[v]:.4f}" for v in range(num_voices))
-            print(f"  iter {i+1:3d}  loss={stft_loss.item():.4f}  {decay_str}")
+            print(f"  iter {i+1:3d}  loss={loss.item():.4f}  (stft={stft_loss.item():.4f})  {decay_str}")
 
     # Build return dictionaries
     results = []
     for i, voice in enumerate(model.voices):
-        _, decay, energy = voice.get_params()
+        _, decay, _, stretch = voice.get_params()
         results.append({
             "pitch": pitches[i],
             "decay": decay.item(),
-            "excitation_energy": energy.item(),
+            "inharmonicity": stretch.item(),
         })
-        print(f"   Voice {i+1} — Pitch: {pitches[i]:.2f} Hz, Decay: {decay.item():.4f}")
+        print(f"   Voice {i+1} — Pitch: {pitches[i]:.2f} Hz, Decay: {decay.item():.4f}, Stretch: {stretch.item():.4f}")
 
     return results
