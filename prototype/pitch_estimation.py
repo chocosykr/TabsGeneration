@@ -456,6 +456,60 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
             "multiset_midis": multiset_key,
         })
 
+    # ── NNLS re-ranking ─────────────────────────────────────────────────────
+    # Replace the heuristic spectral score with a principled non-negative
+    # least-squares amplitude fit.  For each candidate we build harmonic
+    # templates and solve for the best non-negative amplitudes that explain
+    # the observed spectrum.
+    #
+    # Voice-presence penalty (Experiment 3):
+    # A candidate should not be allowed to explain a 4-string chord by
+    # silently setting one voice's amplitude to ≈0.  If NNLS returns
+    # amplitude < PRESENCE_THRESHOLD for a voice, we subtract a penalty
+    # per silenced voice.  This prevents "candidate cheating" by voice
+    # deletion.
+    #
+    # Note: we do NOT penalise by energy magnitude (plucking strength varies)
+    # but by the *relative* amplitude within the candidate — if NNLS needs
+    # a voice's amplitude to be essentially 0 to fit the recording, that
+    # voice's fundamental frequency is not present in the audio.
+    try:
+        from spectral_template import score_candidate_nnls
+        _NNLS_AVAILABLE = True
+    except ImportError:
+        _NNLS_AVAILABLE = False
+
+    if _NNLS_AVAILABLE:
+        _PRESENCE_THRESHOLD = 0.05  # fraction of max amplitude below which a voice is "absent"
+        _MUTE_PENALTY       = 0.03  # subtracted per silenced voice from the NNLS score
+
+        nnls_results = []
+        for candidate in candidates:
+            res = score_candidate_nnls(mag, candidate["pitches"], n_fft, sample_rate)
+            amps = res["amplitudes"]
+
+            # Voice presence: check relative amplitudes
+            max_amp = max(amps) if amps else 1.0
+            n_muted = sum(1 for a in amps if a < _PRESENCE_THRESHOLD * max_amp)
+
+            nnls_score = res["score"] - n_muted * _MUTE_PENALTY
+
+            candidate["nnls_score"]      = nnls_score
+            candidate["nnls_score_raw"]  = res["score"]
+            candidate["nnls_amplitudes"] = amps
+            candidate["n_muted_voices"]  = n_muted
+            nnls_results.append(nnls_score)
+
+        # Re-normalise NNLS scores to [0, 1]
+        best_nnls = max(nnls_results) if nnls_results else 1.0
+        for candidate in candidates:
+            candidate["spectral_score_norm"] = (
+                candidate["nnls_score"] / best_nnls if best_nnls > 0 else 0.0
+            )
+
+        # Re-sort by NNLS score (descending)
+        candidates.sort(key=lambda c: -c["nnls_score"])
+
     # Log the top candidates
     print(f"   Top {len(candidates)} distinct multisets (of "
           f"{len(best_per_multiset)} total):")
@@ -463,9 +517,11 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
                    'F#', 'G', 'G#', 'A', 'A#', 'B']
     for rank, c in enumerate(candidates, 1):
         notes = [f"{_NOTE_NAMES[m % 12]}{m // 12 - 1}" for m in c["multiset_midis"]]
+        nnls_str = (f"  nnls={c['nnls_score_raw']:.4f}  muted={c['n_muted_voices']}"
+                    if "nnls_score_raw" in c else "")
         print(f"      #{rank}: frets={c['frets']}  notes=[{', '.join(notes)}]  "
               f"spectral={c['spectral_score']:.1f}  "
-              f"norm={c['spectral_score_norm']:.3f}")
+              f"norm={c['spectral_score_norm']:.3f}{nnls_str}")
 
     return {
         "candidates": candidates,

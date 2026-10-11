@@ -111,8 +111,8 @@ def process_audio_multi_notes(file_path: str,
         #
         # Combined score = α × spectral_norm + β × physics_norm
         # Both components are normalized to [0, 1] so weights are interpretable.
-        _ALPHA = 0.4   # spectral weight
-        _BETA  = 0.6   # physics weight
+        _ALPHA = 1.0   # spectral weight
+        _BETA  = 0.0   # physics weight (disabled due to identifiability failure)
 
         evaluated = []  # list of (combined_score, candidate_dict)
 

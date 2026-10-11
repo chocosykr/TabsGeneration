@@ -1,0 +1,67 @@
+{
+  "configurations": {
+    "decay_energy": {
+      "gt": {
+        "decay": 0.99,
+        "energy": 1.0
+      },
+      "init": {
+        "decay": 0.95,
+        "energy": 0.5
+      },
+      "recovered": {
+        "decay": 0.990027904510498,
+        "energy": 0.9940932989120483
+      },
+      "loss": 0.0937744602560997
+    },
+    "stretch_energy": {
+      "gt": {
+        "stretch": 0.03,
+        "energy": 1.0
+      },
+      "init": {
+        "stretch": 0.005,
+        "energy": 0.5
+      },
+      "recovered": {
+        "stretch": 0.030235160142183304,
+        "energy": 0.9942272305488586
+      },
+      "loss": 0.10490840673446655
+    },
+    "stretch_decay": {
+      "gt": {
+        "stretch": 0.03,
+        "decay": 0.99
+      },
+      "init": {
+        "stretch": 0.005,
+        "decay": 0.95
+      },
+      "recovered": {
+        "stretch": 0.030069192871451378,
+        "decay": 0.9898502826690674
+      },
+      "loss": 0.1088724434375763
+    },
+    "all_three": {
+      "gt": {
+        "stretch": 0.03,
+        "decay": 0.99,
+        "energy": 1.0
+      },
+      "init": {
+        "stretch": 0.005,
+        "decay": 0.95,
+        "energy": 0.5
+      },
+      "recovered": {
+        "stretch": 0.029861196875572205,
+        "decay": 0.989922046661377,
+        "energy": 0.9983893632888794
+      },
+      "loss": 0.09384030103683472
+    }
+  }
+}
