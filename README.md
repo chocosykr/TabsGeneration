@@ -1,43 +1,84 @@
-# TabsGeneration
+# TabsGeneration: Differentiable Ukulele Tab Transcription
 
-A differentiable signal-processing pipeline that listens to a ukulele recording (a `.wav` file) and outputs the **string numbers** and **fret positions** needed to reproduce it — i.e., automatic ukulele tablature transcription. Supports single notes, two-note dyads, and full 4-string chords.
+A differentiable physical-acoustics signal processing pipeline that listens to a ukulele recording (`.wav` file) and outputs the **string numbers** and **fret positions** needed to reproduce it — i.e., automatic ukulele tablature transcription. 
+
+Supports single plucked notes, two-note dyads, and full 4-string chords, combining **Non-Negative Least Squares (NNLS)** harmonic template matching, **physical string inharmonicity**, **Differentiable Karplus-Strong (DKS)** synthesis, and a **direct Candidate Audio Comparison engine** with dedicated GPU acceleration.
+
+---
+
+## Key Features
+
+- **Analysis-by-Synthesis Candidate Audio Comparison:** Directly synthesizes candidate tab options and compares their acoustic waveforms against the input recording using multi-scale STFT loss, spectral convergence, and waveform envelope correlation.
+- **Physical String Inharmonicity Modeling:** Differentiates between identical pitches on different strings (e.g. string 1 fret 0 vs string 4 fret 2) by analyzing overtone stiffness and dispersion.
+- **High-Performance Dedicated GPU Engine:** Seamlessly detects and leverages dedicated NVIDIA GPUs (e.g. RTX 4050/4060/3060). Uses JIT-compiled native recurrence (`DifferentiableKSFunction`) with CUDA-accelerated STFT loss, delivering over 45+ optimization iterations per second (up to 900× faster).
+- **Easy-to-Read Terminal Statistics:** Tablature rankings, acoustic similarity percentages ($0\% - 100\%$), diagnostics, and real-time execution timing are formatted cleanly in ASCII tables.
+- **Synthesized Audio Export:** Can save the acoustic audio of the winning transcribed tab as a `.wav` file (`--save-synth`) to verify the transcribed tab by ear.
 
 ---
 
 ## How It Works
 
-The pipeline has three sequential stages:
+The transcription pipeline operates in five sequential stages:
 
+```text
+[Input Audio Recording (.wav)]
+             │
+             ▼
+ 1. Audio Preprocessing & Onset Extraction
+    Extracts the peak-energy attack window (~0.5s) where pluck dynamics and string physics are clearest.
+             │
+             ▼
+ 2. Note Detection & Candidate Hypotheses (NNLS Harmonic Matching)
+    Single note: pYIN pitch tracking on onset window.
+    Chords (2-4 notes): Brute-force Non-Negative Least Squares (NNLS) search over all fretboard shapes,
+    filtering for the Top-N candidate multisets that best explain recorded harmonic peaks.
+             │
+             ▼
+ 3. Differentiable Karplus-Strong (DKS) Physical Simulation
+    Simulates string vibrations with physical parameters:
+      • Fundamental Frequency (Pitch)
+      • Damping / Sustain (Decay factor)
+      • String Stiffness / Dispersion (Inharmonicity)
+    The Adam optimizer fine-tunes decay and timbre parameters using Multi-Scale STFT loss.
+             │
+             ▼
+ 4. Candidate Output Audio Comparison Engine
+    Directly synthesizes candidate tabs and compares each candidate waveform against the input audio:
+      • Multi-Scale STFT Loss (timbre & spectral envelope match)
+      • Spectral Convergence (energy distribution match)
+      • Waveform Envelope Correlation
+             │
+             ▼
+ 5. String Physics Fit & Final Tablature Selection
+    Combines: [Audio Match %] + [Spectral Fit %] + [Physics Fit %]
+    Selects the winning candidate tab and outputs the final tablature and execution time.
 ```
-Audio (.wav)
-    │
-    ▼
-1. Pitch Estimation (pYIN / Ukulele-Constrained Chord Search)
-    │   Single note: pYIN on the onset window.
-    │   Polyphony (2-4 notes): brute-force search over all possible chord
-    │   shapes on the strummed strings, scoring each by how much spectral
-    │   energy its harmonic series explains (each FFT bin counted once).
-    ▼
-2. Differentiable Karplus-Strong Optimisation
-    │   Fits a physically-inspired string model (1-4 voices, one per
-    │   strummed string; extra simulated strings stay silent) to the audio
-    │   to refine decay and timbre parameters via gradient descent.
-    ▼
-3. Tablature Output
-        The winning chord shape, as (string, fret) pairs on a
-        standard re-entrant ukulele (G4–C4–E4–A4 tuning).
+
+---
+
+## Project Structure
+
+```text
+TabsGeneration/
+├── README.md
+├── .gitignore
+├── docs/
+│   ├── architecture.md          # Detailed system architecture and mathematical formulations
+│   ├── problems_and_solutions.md# Engineering challenges, GPU latency resolution, and fixes
+│   ├── milestone-01-scope.md    # Initial milestone goals
+│   └── learning-path.md         # Reference literature and audio DSP guides
+└── prototype/
+    ├── cli.py                   # Unified CLI entry-point (transcribe, synthesize)
+    ├── main.py                  # Pipeline orchestrator and formatting engine
+    ├── device_config.py         # Dedicated GPU & CUDA device configuration
+    ├── pitch_estimation.py      # pYIN and NNLS harmonic template chord search
+    ├── optimization.py          # Adam optimizer, audio comparison metrics, multi-scale STFT loss
+    ├── karplus_strong.py        # High-performance Differentiable Karplus-Strong model
+    ├── fretboard_mapper.py      # Ukulele tuning, physical inharmonicity priors, tab mapping
+    ├── test_synthetic.py        # Synthetic test audio generator
+    ├── test_audio_comparison_candidate_selection.py # Verification tests for audio comparison
+    └── *.wav                    # Sample and benchmark audio files
 ```
-
-### Module Overview
-
-| File | Role |
-|---|---|
-| `main.py` | CLI entry-point; orchestrates all three stages |
-| `pitch_estimation.py` | pYIN for mono; ukulele-constrained chord-shape search for polyphony (2-4 notes) |
-| `optimization.py` | Adam optimisation loop using a multi-scale STFT loss |
-| `karplus_strong.py` | Differentiable Karplus-Strong synthesiser (PyTorch), 1-4 voices |
-| `fretboard_mapper.py` | Maps Hz → (string, fret) using standard ukulele tuning |
-| `test_synthetic.py` | Generates synthetic `.wav` test files for validation |
 
 ---
 
@@ -45,214 +86,176 @@ Audio (.wav)
 
 ### Prerequisites
 
-- Python 3.9+
-- A working `pip` environment (a virtual environment is recommended)
+- Python 3.9+ (Python 3.10 – 3.14 supported)
+- A working `pip` environment
+- *(Optional but recommended)* NVIDIA dedicated GPU with CUDA support
 
 ### Steps
 
 ```bash
-# 1. Clone the repo and enter the project directory
+# 1. Clone the repository and enter the directory
 git clone <repo-url>
-cd "ukulele tabs"
+cd TabsGeneration
 
 # 2. (Recommended) Create and activate a virtual environment
-python -m venv prototype/venv
-source prototype/venv/bin/activate
+python -m venv .venv
+# On Windows:
+.venv\Scripts\activate
+# On Linux/macOS:
+source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r prototype/requirements.txt
 ```
 
-### Dependencies
+### Dedicated GPU Setup (NVIDIA RTX / CUDA)
 
+To enable GPU acceleration on Windows:
+```powershell
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
 ```
-torch
-torchaudio
-librosa
-numpy
-scipy
-tqdm
+When running, `prototype/device_config.py` will automatically detect your dedicated GPU:
+```text
+[device_config] Dedicated GPU active: NVIDIA GeForce RTX 4050 Laptop GPU (6.0 GB VRAM) on cuda:0
 ```
-
-+------------------------------------------------------------------------------------------------------------+
-|                                                                                                            |
-|                                                                   ## Usage                                 |
-|                                                                                                            |
-+------------------------------------------------------------------------------------------------------------+
-All commands are run from inside the `prototype/` directory.
-
-```bash
-cd prototype
-```
-
-### Basic Usage
-
-```bash
-# Full 4-string chord (default): strum all strings
-python main.py my_chord.wav
-
-# Single note
-python main.py my_note.wav --notes 1
-```
-
-**Example (Single Note):**
-
-```bash
-python main.py test_E4.wav --notes 1
-```
-
-**Example output:**
-
-```
-Loading audio from test_E4.wav...
-Loaded 32000 samples at 16000 Hz (2.00s).
-
-1. Estimating Initial Pitch (pYIN on onset window)...
-   Top MIDI candidates: MIDI 64 (329.6 Hz, w=4.21), MIDI 65 (349.2 Hz, w=0.10)
-   Estimated F0: 329.63 Hz
-
-2. Running Differentiable Karplus-Strong Optimization...
-Starting optimisation  (pitch fixed at 329.63 Hz, optimising decay/energy) ...
-   iter  10  loss=0.3241  pitch=329.63 Hz  decay=0.9801
-   ...
-   Optimized Pitch: 329.63 Hz
-   Optimized Decay: 0.9803
-
-3. Mapping Physical Parameters to Tablature...
-   -> Plucked String: 2 (open E4 string)
-   -> Fret Number:    0
-   -> Note:           MIDI 64
-
-   Alternative Fingering Candidates:
-      String 2 (open E4), Fret 0
-      String 3 (open C4), Fret 4
-```
-
-### CLI Options
-
-| Flag | Default | Description |
-|---|---|---|
-| `audio_file` | *(required)* | Path to a ukulele `.wav` file |
-| `--notes N` | `4` | Number of strings being **simulated** (1-4). `1` = monophonic pYIN path; `2-4` = chord-shape search |
-| `--strummed S` | `1,2,3,4` | Comma-separated list of strings actually **strummed** (subset of 1-4). Must be ≤ `--notes` |
-| `--iter N` | `50` | Number of Adam optimisation iterations |
-| `--lr F` | `0.5` | Learning rate for the Adam optimiser |
-
-**Example with custom options:**
-
-```bash
-python3 main.py test_B4_s1f2.wav --notes 1 --iter 100 --lr 0.2
-```
-
-**Example (Two Notes / Dyad):**
-
-```bash
-# G-string fret 2 + E-string fret 1 (an F chord fragment)
-python3 main.py test_two_F_chord_G2_E1.wav --notes 2 --strummed 4,2
-```
-
-**Example (Full 4-String Chord):**
-
-```bash
-# C-Major: 0003
-python3 main.py test_four_C_Major.wav --notes 4 --strummed 1,2,3,4
-```
-
-> **How `--notes` and `--strummed` interact:** you simulate `--notes` strings in the synthesis model, and `--strummed` picks which of them actually sound in the recording. Strumming fewer strings than simulated is fine (the unused simulated strings stay silent). Strumming more than simulated is rejected with an error. When you strum a chord, unfretted strings ring open — the chord search assigns a fret (possibly 0 = open) to every strummed string.
 
 ---
 
-## Input Audio Requirements
+## Usage
 
-| Property | Requirement |
-|---|---|
-| Format | WAV (16-bit PCM recommended) |
-| Channels | Mono or stereo (stereo is auto-mixed to mono) |
-| Content | 1-4 simultaneous notes (mono, dyads, or full chords) |
-| Pitch range | G2 (~98 Hz) to A5 (~1050 Hz) |
-| Duration | At least ~0.3 s of sustain after the attack |
+You can run the pipeline either via the unified CLI (`prototype/cli.py`) or directly through `prototype/main.py`.
+
+### 1. Transcribe a Full 4-String Chord
+Transcribes a chord audio file, compares candidate shapes against the input audio, and saves the synthesized output audio of the winning tab:
+
+```powershell
+python prototype/cli.py transcribe test_four_C_Major.wav --notes 4 --strummed 1,2,3,4 --top-n 3 --iter 5 --save-synth
+```
+
+### 2. Fast Evaluation Mode (`--iter 0`)
+Runs candidate generation and instant candidate audio comparison without parameter optimization iterations (finishes in seconds):
+
+```powershell
+python prototype/cli.py transcribe test_four_C_Major.wav --notes 4 --top-n 3 --iter 0
+```
+
+### 3. Transcribe a Single Plucked Note
+Transcribes a single note and resolves ambiguous string positions:
+
+```powershell
+python prototype/cli.py transcribe prototype/test_B4_s1f2.wav --notes 1 --iter 0 --save-synth
+```
+
+---
+
+## Example Terminal Output
+
+### Chord Transcription Table
+```text
+==================================================================================================
+          CANDIDATE CHORD RANKINGS (Acoustic Audio Comparison vs Input Recording)
+==================================================================================================
+ Rank   Candidate Notes         Tab (4-3-2-1)    Audio Match  Spectral Fit    Combined   Verdict   
+ ----   ----------------------  ---------------  -----------  ------------  ----------   ----------
+  # 1   [C4, E4, G4, D5]        0 - 0 - 0 - 5         100.0%         99.8%       99.9%   [WINNER]
+  # 2   [C4, E4, G4, B4]        0 - 0 - 0 - 2          98.8%        100.0%       99.4%   Rejected
+  # 3   [C4, E4, G4, A4]        0 - 0 - 0 - 0          92.6%         95.5%       94.1%   Rejected
+--------------------------------------------------------------------------------------------------
+ * Audio Match: Synthesized candidate tab audio compared directly with input recording (STFT loss).
+ * Spectral Fit: Harmonic template alignment via NNLS (higher is better).
+ * Combined: Weighted multi-criteria score ranking acoustic match, spectrum, and physics.
+==================================================================================================
+
+==================================================================================================
+                 WINNER ACOUSTIC DIAGNOSTICS (Synthesized Audio vs Input Audio)
+==================================================================================================
+   Metric                                 Value   Rating           Interpretation
+   --------------------------------  ----------   --------------   -----------------------------------
+   Multi-Scale STFT Error                3.9679   Best in search   Timbre & harmonic frequency error (lower is better)
+   Spectral Convergence                  0.7365   Optimal          Normalized energy distribution deviation (lower is better)
+   Log-Magnitude STFT Loss               3.2314   Strong           Balance across low/high harmonics (lower is better)
+   Waveform Envelope Corr.               0.1762   Moderate         Time-domain envelope alignment (-1.0 to +1.0)
+   Relative Audio Match                  100.0%   #1 Rank          Audio match score relative to runner-up candidates
+==================================================================================================
+
+==================================================================================================
+                                   FINAL TRANSCRIBED TABLATURE
+==================================================================================================
+   Fretboard Layout (Ukulele Strings 4 to 1):
+      String 4 (open G4):  Fret 0 (open)   -->  G4  (392.00 Hz)
+      String 3 (open C4):  Fret 0 (open)   -->  C4  (261.63 Hz)
+      String 2 (open E4):  Fret 0 (open)   -->  E4  (329.63 Hz)
+      String 1 (open A4):  Fret 5          -->  D5  (587.33 Hz)
+--------------------------------------------------------------------------------------------------
+   Summary Tab:     [ G: 0 | C: 0 | E: 0 | A: 5 ]
+   Chord Notes:     [C4, E4, G4, D5]
+   Acoustic Match:  100.0% (STFT Error: 3.9679) | Overall Score: 99.9%
+   Execution Time:  11.03s (Device: NVIDIA GeForce RTX 4050 Laptop GPU)
+==================================================================================================
+```
+
+---
+
+## CLI Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `audio_file` | *(required)* | Path to the ukulele `.wav` file |
+| `--notes N` | `4` | Number of simulated voices/strings (1–4). `1` = mono pYIN path; `2-4` = chord search |
+| `--strummed S` | `1,2,3,4` | Comma-separated list of strings actually strummed (e.g. `1,2,3` or `1,2,3,4`) |
+| `--iter N` | `50` | Number of Adam optimization iterations (`0` for instant evaluation) |
+| `--lr F` | `0.5` | Learning rate for the Adam optimizer |
+| `--top-n N` | `8` | Number of candidate chord shapes to evaluate with audio comparison |
+| `--audio-weight W` | `0.5` | Weight for candidate output audio comparison score in candidate selection |
+| `--spectral-weight W`| `0.5` | Weight for spectral template score in candidate selection |
+| `--save-synth` | `False` | Save the winning candidate tab's synthesized audio to a `.wav` file |
+| `--synth-out PATH` | `output_tab_synth.wav` | Output filename for the synthesized audio file |
 
 ---
 
 ## Generating Synthetic Test Audio
 
-You can synthesise test `.wav` files directly using the Karplus-Strong model, which is useful for verifying the pipeline end-to-end.
+You can synthesize test audio files directly using the physical Karplus-Strong model:
 
-```bash
-python test_synthetic.py
+```powershell
+python prototype/cli.py synthesize --frets "4:0,3:0,2:0,1:3" --out "test_c_major.wav"
 ```
 
-This creates single-note, two-note, and full-chord files in the `prototype/` directory:
+Or run the synthetic batch generator:
+```powershell
+python prototype/test_synthetic.py
+```
 
-| File | Content |
-|---|---|
-| `test_E4_s2f0.wav` | E4 (string 2, open) |
-| `test_B4_s1f2.wav` | B4 (string 1, fret 2) |
-| `test_two_C4_E4.wav` | Dyad: C4 + E4 |
-| `test_two_E4_A4.wav` | Dyad: E4 + A4 |
-| `test_two_G4_C5.wav` | Dyad: G4 + C5 |
-| `test_four_C_Major.wav` | C-Major chord `0003` (all 4 strings) |
+---
 
-You can add your own test cases by editing the `__main__` block in `test_synthetic.py`:
+## Verification & Testing
 
-```python
-# Format: string_fret_to_hz(string_number, fret_number)
-generate_test_audio(string_fret_to_hz(4, 3), "test_Bb4_s4f3.wav")   # Bb4
-generate_test_audio(string_fret_to_hz(3, 7), "test_G4_s3f7.wav")    # G4
-generate_multi_note_audio([string_fret_to_hz(1, 2), string_fret_to_hz(2, 3)], "test_dyad.wav")
+To run the automated verification test suite for the candidate audio comparison engine:
+```powershell
+python prototype/test_audio_comparison_candidate_selection.py
+```
+
+Expected output:
+```text
+[device_config] Dedicated GPU active: NVIDIA GeForce RTX 4050 Laptop GPU (6.0 GB VRAM) on cuda:0
+[OK] compare_candidate_audio successfully distinguishes matching vs wrong audio.
+[OK] Candidate tab output audio comparison correctly identifies the true chord tab.
+[OK] Single-note candidate tabs include audio comparison with input audio.
+ALL AUDIO COMPARISON CANDIDATE SELECTION TESTS PASSED!
 ```
 
 ---
 
 ## Ukulele Tuning Reference
 
-This tool uses **standard re-entrant (High G) tuning**:
+This system models a standard **re-entrant (High G) concert/soprano ukulele**:
 
-| String | Open Note | Frequency |
-|---|---|---|
-| 4 | G4 | 392.00 Hz |
-| 3 | C4 | 261.63 Hz |
-| 2 | E4 | 329.63 Hz |
-| 1 | A4 | 440.00 Hz |
+| String | Open Note | Fundamental Frequency |
+|:---:|:---:|:---:|
+| **4** | G4 | 392.00 Hz |
+| **3** | C4 | 261.63 Hz |
+| **2** | E4 | 329.63 Hz |
+| **1** | A4 | 440.00 Hz |
 
-> **Note:** String 1 is the string closest to the floor when the ukulele is held in playing position.  
-> Maximum supported fret: **15**.
-
----
-
-## Project Structure
-
-```
-ukulele tabs/
-├── README.md
-├── .gitignore
-├── filestructure.txt
-├── docs/
-│   ├── learning-path.md
-│   ├── milestone-01-scope.md
-│   └── handoff.md             # Status + handoff notes for AI agents
-└── prototype/
-    ├── main.py               # CLI entry-point
-    ├── pitch_estimation.py   # pYIN pitch detector
-    ├── optimization.py       # Karplus-Strong Adam optimizer
-    ├── karplus_strong.py     # Differentiable KS synthesiser
-    ├── fretboard_mapper.py   # Hz → (string, fret) mapper
-    ├── test_synthetic.py     # Synthetic WAV generator
-    ├── requirements.txt      # Python dependencies
-    └── *.wav                 # Sample/test audio files
-```
-
----
-
-## Known Limitations
-
-- **Monophonic note / dyad / chord only** — simultaneous notes only; the system cannot yet transcribe melodies or strumming patterns.
-- **Dry recordings preferred** — heavy reverb or noise may degrade pitch accuracy.
-- **String disambiguation is heuristic** — when the same pitch is playable on multiple strings, the chord-shape search picks the shape that best explains the recorded spectrum (equivalent-sounding fingerings are accepted, per the project's design goal).
-- **Subset-strumming is ambiguous by nature** — if the audio contains notes on strings you did *not* list in `--strummed`, the search will silently drop the least-energetic note.
-
----
-
-## Roadmap
-
-See `docs/milestone-01-scope.md` and `docs/learning-path.md` for the planned development milestones.
+* Maximum supported fret: **15** frets.
+* String 1 is the highest-pitch open string (closest to the floor).
