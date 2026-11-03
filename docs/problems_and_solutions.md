@@ -215,3 +215,25 @@ hallucinate real strings at overtone frequencies.
 | Does spectral rank-7 for E minor affect final output after constraint fix? | If physics correctly scores true shape #1, spectral rank doesn't matter |
 | Is `_ALPHA=0.4 / _BETA=0.6` the right weight split? | Inspect score distributions once constraint fix results are in |
 | Is an overtone discount needed for E minor? | Run E minor end-to-end with constraint, check if true shape wins |
+
+
+---
+
+## Problem 8 — Candidate Selection Disconnected from Candidate Output Audio
+
+**Status:** ✅ Resolved  
+**Affected Files:** `main.py`, `optimization.py`, `fretboard_mapper.py`, `cli.py`, `ukulele_tabs_kaggle.ipynb`
+
+### Symptom
+During candidate selection, candidates were evaluated and synthesized via Karplus-Strong, but the candidate selection ranking ignored the synthesized output audio. The winner was selected almost exclusively by the preliminary spectral template heuristic, discarding the actual audio comparison between the candidate tab's acoustic realization and the input audio.
+
+### Root Cause
+`optimize_multi_parameters` optimized decay and energy against the input audio, but discarded the final STFT loss and output audio. `main.py` then scored candidates using `_ALPHA * spectral_norm + _BETA * physics_norm` with `_BETA=0.0`, completely bypassing the audio comparison.
+
+### Fix Applied
+1. Created `compare_candidate_audio` in `optimization.py` to compute multi-scale STFT loss, spectral convergence, log-magnitude error, waveform correlation, and monotonic audio match similarity between the candidate tab's output audio and the input audio.
+2. Updated `optimize_multi_parameters` with `return_audio=True` to return the synthesized candidate output audio and audio comparison metrics.
+3. Updated candidate selection in `main.py` and `ukulele_tabs_kaggle.ipynb` to score candidates using normalized audio comparison:
+   $$\text{Combined Score} = w_{\text{audio}} \cdot \text{AudioScore}_{\text{norm}} + w_{\text{spectral}} \cdot \text{SpectralScore}_{\text{norm}} + w_{\text{physics}} \cdot \text{PhysicsScore}_{\text{norm}}$$
+4. Integrated candidate output audio comparison into `map_parameters_to_tab` and `refine_chord_with_inharmonicity` in `fretboard_mapper.py`.
+5. Added CLI options `--audio-weight`, `--spectral-weight`, `--save-synth`, and `--synth-out`.

@@ -49,6 +49,35 @@ def main():
         default=0.5, 
         help="Learning rate for Adam optimizer (default: 0.5)"
     )
+    transcribe_parser.add_argument(
+        "--top-n", 
+        type=int, 
+        default=8, 
+        help="Number of candidate chord multisets to evaluate (default: 8)"
+    )
+    transcribe_parser.add_argument(
+        "--audio-weight", 
+        type=float, 
+        default=0.5, 
+        help="Weight for candidate output audio comparison score in candidate selection (default: 0.5)"
+    )
+    transcribe_parser.add_argument(
+        "--spectral-weight", 
+        type=float, 
+        default=0.5, 
+        help="Weight for spectral template score in candidate selection (default: 0.5)"
+    )
+    transcribe_parser.add_argument(
+        "--save-synth", 
+        action="store_true", 
+        help="Save the winning candidate tab's synthesized audio to a WAV file"
+    )
+    transcribe_parser.add_argument(
+        "--synth-out", 
+        type=str, 
+        default="output_tab_synth.wav", 
+        help="Output path for synthesized audio of the winning candidate tab (default: output_tab_synth.wav)"
+    )
 
     # --- SYNTHESIZE COMMAND ---
     synth_parser = subparsers.add_parser(
@@ -89,7 +118,12 @@ def main():
                 num_notes=args.notes, 
                 strummed_strings=strummed_strings, 
                 num_iterations=args.iter, 
-                lr=args.lr
+                lr=args.lr,
+                top_n=args.top_n,
+                audio_weight=args.audio_weight,
+                spectral_weight=args.spectral_weight,
+                save_synth=args.save_synth,
+                synth_out_path=args.synth_out
             )
         except Exception as e:
             print(f"Transcription failed: {e}")

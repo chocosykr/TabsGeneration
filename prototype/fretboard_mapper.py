@@ -1,5 +1,7 @@
 import numpy as np
 import math
+import torch
+from typing import Optional, List, Dict
 
 # Standard Re-entrant Ukulele Tuning (High G)
 # String 4 is G4, String 3 is C4, String 2 is E4, String 1 is A4
@@ -18,7 +20,7 @@ MAX_FRET = 15
 #
 # Model: stretch(fret) = stretch_0 * r^fret
 # where r is fit so that stretch(3) = 0.095 given stretch(0) = 0.002
-#   r = (0.095 / 0.002) ^ (1/3) ≈ 3.60
+#   r = (0.095 / 0.002) ^ (1/3) ~= 3.60
 #
 # Per-string open-string stretch (fret 0) from empirical observations:
 _STRETCH_OPEN = {
@@ -28,9 +30,9 @@ _STRETCH_OPEN = {
     1: 0.002,   # A4: observed ~0.001-0.004
 }
 
-# Per-fret growth ratio: calibrated from open→fret-3 data
+# Per-fret growth ratio: calibrated from open->fret-3 data
 # We want even the lowest open stretch (0.001) to saturate near 0.095 by fret 3.
-# r = (0.095 / 0.001)^(1/3) ≈ 4.56
+# r = (0.095 / 0.001)^(1/3) ~= 4.56
 _STRETCH_RATIO = 4.56
 
 # Sigmoid ceiling used in karplus_strong.py
@@ -74,8 +76,8 @@ def inharmonicity_score(observed_inharm: float, string_idx: int, fret: int) -> f
     Score is in [0, 1]: 1.0 = perfect match, decays as observation deviates
     from the physically expected value.
 
-    Sigma is set to 0.04: wide enough to bridge the open (≈0.002) vs fretted
-    (≈0.095) clusters, while still giving good separation between adjacent frets.
+    Sigma is set to 0.04: wide enough to bridge the open (~=0.002) vs fretted
+    (~=0.095) clusters, while still giving good separation between adjacent frets.
     """
     expected = expected_inharmonicity(string_idx, fret)
     sigma = 0.04
@@ -85,11 +87,13 @@ def inharmonicity_score(observed_inharm: float, string_idx: int, fret: int) -> f
 
 def map_parameters_to_tab(optimized_pitch: float,
                            optimized_decay: float,
-                           optimized_inharm: float) -> dict:
+                           optimized_inharm: float,
+                           target_audio: Optional[torch.Tensor] = None,
+                           sample_rate: int = 16000) -> dict:
     """
     Maps a single continuous optimized pitch to discrete (string, fret) coordinates.
-    Uses calibrated inharmonicity scoring to disambiguate among candidates
-    that produce the same MIDI note on different strings.
+    When target_audio is provided, synthesizes each candidate tab's output audio
+    and compares it directly against the input audio.
     """
     target_midi = freq_to_midi(optimized_pitch)
     target_midi_rounded = round(target_midi)
@@ -112,16 +116,61 @@ def map_parameters_to_tab(optimized_pitch: float,
         return {"error": f"Pitch {optimized_pitch:.2f} Hz is out of bounds "
                          f"for a standard ukulele."}
 
-    # Score the candidates: inharmonicity for fret disambiguation,
-    # plus a tiny ergonomic tiebreaker (prefer lower frets).
-    INHARMONICITY_WEIGHT = 1.0
+    # Score candidates:
+    # 1. Physics inharmonicity score
+    # 2. Output audio vs input audio comparison
+    # 3. Ergonomic tiebreaker (prefer lower frets)
+    INHARMONICITY_WEIGHT = 0.5
+    AUDIO_WEIGHT = 0.5 if target_audio is not None else 0.0
 
     for candidate in candidates:
         s_inharm = inharmonicity_score(
             optimized_inharm, candidate["string"], candidate["fret"]
         )
         ergonomic_penalty = -candidate["fret"] * 0.001
-        candidate["total_score"] = (INHARMONICITY_WEIGHT * s_inharm) + ergonomic_penalty
+
+        # Synthesize candidate tab audio and compare to input audio
+        audio_sim = 0.0
+        audio_loss = 0.0
+        if target_audio is not None:
+            try:
+                from optimization import synthesize_candidate_tab_audio, compare_candidate_audio
+                expected_stretch = expected_inharmonicity(candidate["string"], candidate["fret"])
+                duration = target_audio.shape[-1] / sample_rate
+                cand_synth = synthesize_candidate_tab_audio(
+                    pitches=[optimized_pitch],
+                    sample_rate=sample_rate,
+                    duration=duration,
+                    decays=[optimized_decay],
+                    stretches=[expected_stretch]
+                )
+                comp = compare_candidate_audio(cand_synth, target_audio, sample_rate)
+                audio_loss = comp["stft_loss"]
+                audio_sim = comp["similarity"]
+                candidate["audio_loss"] = audio_loss
+                candidate["audio_similarity"] = audio_sim
+                candidate["audio_metrics"] = comp
+            except Exception as e:
+                pass
+
+        candidate["inharm_score"] = s_inharm
+        candidate["ergonomic_penalty"] = ergonomic_penalty
+
+    # Normalize audio comparison scores so lowest STFT loss gets 1.0 (100% match)
+    cand_losses = [c["audio_loss"] for c in candidates if "audio_loss" in c and c["audio_loss"] > 0]
+    min_loss = min(cand_losses) if cand_losses else 1.0
+
+    for candidate in candidates:
+        if "audio_loss" in candidate and candidate["audio_loss"] > 0:
+            candidate["audio_match_norm"] = min_loss / candidate["audio_loss"]
+        else:
+            candidate["audio_match_norm"] = candidate.get("audio_similarity", 0.0)
+
+        candidate["total_score"] = (
+            (INHARMONICITY_WEIGHT * candidate["inharm_score"])
+            + (AUDIO_WEIGHT * candidate["audio_match_norm"])
+            + candidate["ergonomic_penalty"]
+        )
 
     candidates = sorted(candidates, key=lambda x: x["total_score"], reverse=True)
     best_candidate = candidates[0]
@@ -137,7 +186,9 @@ def map_parameters_to_tab(optimized_pitch: float,
 
 def refine_chord_with_inharmonicity(chord_result: dict,
                                     voice_params: list[dict],
-                                    strummed_strings: list[int]) -> dict:
+                                    strummed_strings: list[int],
+                                    target_audio: Optional[torch.Tensor] = None,
+                                    sample_rate: int = 16000) -> dict:
     """
     Post-optimization chord refinement.
 
@@ -145,12 +196,9 @@ def refine_chord_with_inharmonicity(chord_result: dict,
     We iterate through all valid chord shapes (frets on strings) that produce
     the exact same SET of target notes.
 
-    For each shape, we compute the expected (pitch, stretch) for each string.
-    We then match each string to an observed voice that has the SAME pitch
-    (MIDI note). If multiple strings share the same pitch (unison), we try all
-    permutations and pick the one with the best inharmonicity score.
-
-    The shape with the highest total score wins.
+    When target_audio is provided, each candidate chord shape's output audio is
+    synthesized and compared with the input tabs audio, ensuring candidate
+    selection is informed by direct acoustic audio comparison.
     """
     import itertools
 
@@ -164,7 +212,7 @@ def refine_chord_with_inharmonicity(chord_result: dict,
         m = int(round(freq_to_midi(vp["pitch"])))
         if m not in observed_by_midi:
             observed_by_midi[m] = []
-        observed_by_midi[m].append(vp["inharmonicity"])
+        observed_by_midi[m].append(vp.get("inharmonicity", 0.0))
 
     frets_range = range(MAX_FRET + 1)
     valid_shapes = []
@@ -180,11 +228,6 @@ def refine_chord_with_inharmonicity(chord_result: dict,
         if generated_set != target_midis:
             continue
 
-        # For this shape to be completely valid, it must have the exact same
-        # number of voices for each MIDI note as the observation, or it must
-        # be able to map every string to an observed voice.
-        # Actually, because target sets match, we just map strings to observed voices.
-        # Group generated strings by MIDI note
         gen_by_midi = {}
         for s_idx, f, m in zip(strummed_strings, frets, generated_midis):
             if m not in gen_by_midi:
@@ -201,18 +244,12 @@ def refine_chord_with_inharmonicity(chord_result: dict,
                 shape_possible = False
                 break
                 
-            # If we generated more strings for this note than observed voices,
-            # we just duplicate the closest observed stretch to be forgiving (or vice versa).
-            # But perfectly, len(gen_strings) == len(obs_stretches).
-            # Let's compute the best bipartite matching (permutations) for this note cluster.
             best_cluster_score = -1.0
             best_cluster_details = {}
             
-            # Pad obs_stretches if needed (e.g. 2 strings play G4 but optimizer only heard 1 clear peak)
             while len(obs_stretches) < len(gen_strings):
                 obs_stretches.append(obs_stretches[0])
                 
-            # Permute the observed stretches to match to the generated strings
             for p_stretches in itertools.permutations(obs_stretches, len(gen_strings)):
                 cluster_score = 0.0
                 cluster_details = {}
@@ -241,19 +278,51 @@ def refine_chord_with_inharmonicity(chord_result: dict,
         span = (max(non_zero_frets) - min(non_zero_frets)) if non_zero_frets else 0
         total_fret = sum(frets)
 
+        # Output audio comparison for this candidate shape against input tabs audio
+        shape_audio_loss = 0.0
+        shape_audio_sim = 0.0
+        if target_audio is not None:
+            try:
+                from optimization import synthesize_candidate_tab_audio, compare_candidate_audio
+                shape_pitches = [
+                    UKULELE_TUNING[s]["freq"] * (2 ** (f / 12.0))
+                    for s, f in zip(strummed_strings, frets)
+                ]
+                shape_stretches = [
+                    expected_inharmonicity(s, f)
+                    for s, f in zip(strummed_strings, frets)
+                ]
+                cand_synth = synthesize_candidate_tab_audio(
+                    pitches=shape_pitches,
+                    sample_rate=sample_rate,
+                    duration=target_audio.shape[-1] / sample_rate,
+                    stretches=shape_stretches
+                )
+                shape_comp = compare_candidate_audio(cand_synth, target_audio, sample_rate)
+                shape_audio_loss = shape_comp["stft_loss"]
+                shape_audio_sim = shape_comp["similarity"]
+            except Exception:
+                pass
+
         valid_shapes.append({
             "frets": frets,
             "span": span,
             "total_fret": total_fret,
             "inharm_score": inharm_total,
-            "inharm_details": inharm_details
+            "inharm_details": inharm_details,
+            "audio_loss": shape_audio_loss,
+            "audio_similarity": shape_audio_sim,
         })
 
     if not valid_shapes:
         return chord_result
 
-    # Sort by inharmonicity score (primary), then ergonomics (secondary)
-    valid_shapes.sort(key=lambda x: (-x["inharm_score"], x["span"], x["total_fret"]))
+    # Sort shapes: prioritise audio comparison match with input tabs audio when available
+    if target_audio is not None and any(s["audio_similarity"] > 0 for s in valid_shapes):
+        valid_shapes.sort(key=lambda x: (-x["audio_similarity"], -x["inharm_score"], x["span"], x["total_fret"]))
+    else:
+        valid_shapes.sort(key=lambda x: (-x["inharm_score"], x["span"], x["total_fret"]))
+
     best_shape = valid_shapes[0]
 
     mapping = {}
@@ -268,6 +337,8 @@ def refine_chord_with_inharmonicity(chord_result: dict,
         "span": best_shape["span"],
         "inharm_score": best_shape["inharm_score"],
         "inharmonicity_scores": best_shape["inharm_details"],
+        "audio_loss": best_shape.get("audio_loss", 0.0),
+        "audio_similarity": best_shape.get("audio_similarity", 0.0),
         "all_valid_shapes": valid_shapes[:5]
     }
 
