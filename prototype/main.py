@@ -27,7 +27,9 @@ def process_audio_multi_notes(file_path: str,
                               physics_weight: float = 0.0,
                               save_synth: bool = False,
                               synth_out_path: str = "output_tab_synth.wav",
-                              tab_out_path: str = "output_tabs.txt"):
+                              tab_out_path: str = "output_tabs.txt",
+                              start_sec: float = None,
+                              end_sec: float = None):
     """Full pipeline for N simultaneously played notes."""
     start_time = time.time()
     if num_notes == 1:
@@ -57,6 +59,17 @@ def process_audio_multi_notes(file_path: str,
     # Load and force resample to 16kHz mono
     waveform_np, sample_rate = librosa.load(file_path, sr=16000, mono=True)
     audio_dur = len(waveform_np) / sample_rate
+
+    # Slice targeted segment if specified
+    if start_sec is not None or end_sec is not None:
+        total_len = len(waveform_np)
+        s_idx = max(0, int(start_sec * sample_rate)) if start_sec is not None else 0
+        e_idx = min(total_len, int(end_sec * sample_rate)) if end_sec is not None else total_len
+        if s_idx < e_idx:
+            print(f"   [Segment Targeting] Slicing {s_idx/sample_rate:.2f}s to {e_idx/sample_rate:.2f}s "
+                  f"({(e_idx - s_idx)/sample_rate:.2f}s duration)")
+            waveform_np = waveform_np[s_idx:e_idx]
+            audio_dur = len(waveform_np) / sample_rate
 
     print(f"Loaded {len(waveform_np)} samples at {sample_rate} Hz "
           f"({audio_dur:.2f}s).")
@@ -157,6 +170,19 @@ def process_audio_multi_notes(file_path: str,
             synth_np = synth_np / (np.max(np.abs(synth_np)) + 1e-8)
             wavfile.write(synth_out_path, sample_rate, (synth_np * 32767).astype(np.int16))
             print(f"\n   Saved synthesized output audio to '{synth_out_path}'")
+
+        return {
+            "type": "single_note",
+            "tab_result": tab_result,
+            "pitch": float(vp['pitch']),
+            "note_name": note_name if 'note_name' in locals() else "",
+            "midi": int(midi_num) if 'midi_num' in locals() else 0,
+            "string": int(tab_result.get('string', 1)),
+            "fret": int(tab_result.get('fret', 0)),
+            "candidates": tab_result.get('all_candidates', []),
+            "elapsed": time.time() - start_time,
+            "synth_out": synth_out_path if save_synth else None
+        }
     else:
         # --- Multi-note (chord): Top-N multiset search + audio comparison candidate selection ---
         print(f"\n1. Searching chord shapes on strings {strummed_strings} "
@@ -377,6 +403,20 @@ def process_audio_multi_notes(file_path: str,
             wavfile.write(synth_out_path, sample_rate, (synth_np * 32767).astype(np.int16))
             print(f"\n   Saved winning candidate synthesized output audio to '{synth_out_path}'")
 
+        return {
+            "type": "chord",
+            "winner": winner,
+            "mapping": mapping,
+            "notes": winner_notes,
+            "tab_4321": [mapping.get(s, 0) for s in [4, 3, 2, 1]],
+            "candidates": evaluated,
+            "audio_match": 100.0,
+            "combined_score": float(winner['combined_score'] * 100.0),
+            "stft_loss": float(winner.get('audio_loss', 0.0)),
+            "elapsed": float(elapsed),
+            "synth_out": synth_out_path if save_synth else None
+        }
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -387,6 +427,10 @@ if __name__ == "__main__":
                         help="Number of simulated voices/pitches to extract (default: 4)")
     parser.add_argument("--strummed", type=str, default="1,2,3,4",
                         help="Comma-separated list of strummed strings (default: 1,2,3,4)")
+    parser.add_argument("--start", type=float, default=None,
+                        help="Start time in seconds for targeted segment execution")
+    parser.add_argument("--end", type=float, default=None,
+                        help="End time in seconds for targeted segment execution")
     parser.add_argument("--iter", type=int, default=50,
                         help="Number of optimization iterations (default: 50)")
     parser.add_argument("--lr", type=float, default=0.5,
@@ -420,7 +464,9 @@ if __name__ == "__main__":
             split_strums=args.split_strums,
             save_synth=args.save_synth,
             synth_out_path=synth_out,
-            tab_out_path=args.tab_out
+            tab_out_path=args.tab_out,
+            start_sec=args.start,
+            end_sec=args.end
         )
         sys.exit(0)
 
@@ -437,5 +483,7 @@ if __name__ == "__main__":
         spectral_weight=args.spectral_weight,
         save_synth=args.save_synth,
         synth_out_path=args.synth_out,
-        tab_out_path=args.tab_out
+        tab_out_path=args.tab_out,
+        start_sec=args.start,
+        end_sec=args.end
     )

@@ -84,6 +84,18 @@ def main():
         default="output_tabs.txt",
         help="Output path for formatted tablature text file (default: output_tabs.txt)"
     )
+    transcribe_parser.add_argument(
+        "--start",
+        type=float,
+        default=None,
+        help="Start time in seconds for targeted segment execution"
+    )
+    transcribe_parser.add_argument(
+        "--end",
+        type=float,
+        default=None,
+        help="End time in seconds for targeted segment execution"
+    )
 
     # --- SEQUENCE COMMAND ---
     seq_parser = subparsers.add_parser(
@@ -94,6 +106,18 @@ def main():
         "audio_file",
         type=str,
         help="Path to the ukulele WAV file with a sequence of chords"
+    )
+    seq_parser.add_argument(
+        "--start",
+        type=float,
+        default=None,
+        help="Start time in seconds for targeted segment execution"
+    )
+    seq_parser.add_argument(
+        "--end",
+        type=float,
+        default=None,
+        help="End time in seconds for targeted segment execution"
     )
     seq_parser.add_argument(
         "--min-duration",
@@ -151,6 +175,24 @@ def main():
         type=str, 
         help="Comma-separated frequencies (Hz) to synthesize directly, e.g. '392.00,261.63'."
     )
+
+    # --- UI COMMAND ---
+    ui_parser = subparsers.add_parser(
+        "ui",
+        help="Launch the interactive web interface with audio player, spectrogram, and segment selection"
+    )
+    ui_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port to run the UI server on (default: 8080)"
+    )
+    ui_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to bind the UI server to (default: 127.0.0.1)"
+    )
     
     args = parser.parse_args()
 
@@ -175,7 +217,9 @@ def main():
                 spectral_weight=args.spectral_weight,
                 save_synth=args.save_synth,
                 synth_out_path=args.synth_out,
-                tab_out_path=args.tab_out
+                tab_out_path=args.tab_out,
+                start_sec=args.start,
+                end_sec=args.end
             )
         except Exception as e:
             print(f"Transcription failed: {e}")
@@ -195,11 +239,17 @@ def main():
                 split_strums=args.split_strums,
                 save_synth=args.save_synth,
                 synth_out_path=args.synth_out,
-                tab_out_path=args.tab_out
+                tab_out_path=args.tab_out,
+                start_sec=args.start,
+                end_sec=args.end
             )
         except Exception as e:
             print(f"Chord sequence transcription failed: {e}")
             sys.exit(1)
+
+    elif args.command == "ui":
+        from ui_server import start_ui_server
+        start_ui_server(host=args.host, port=args.port)
 
     elif args.command == "synthesize":
         from test_synthetic import generate_multi_note_audio, string_fret_to_hz

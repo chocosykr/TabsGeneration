@@ -12,8 +12,8 @@ import torch
 # ------------------------------------------------------------------------------
 # CONFIGURE HERE
 # ------------------------------------------------------------------------------
-# Force execution on dedicated GPU
-USE_GPU: bool = True
+# Force execution on dedicated GPU (False = CPU mode, True = Dedicated GPU mode)
+USE_GPU: bool = False
 
 # Specific GPU index (0 = default dedicated GPU on laptops with hybrid graphics)
 GPU_INDEX: int = 0
@@ -44,6 +44,10 @@ def _resolve_device() -> torch.device:
             print("[device_config] WARNING: UKULELE_DEVICE=cuda requested, but PyTorch cannot access CUDA.")
             return torch.device("cpu")
         return d
+
+    if not USE_GPU:
+        print("[device_config] Device mode: CPU active (USE_GPU = False).")
+        return torch.device("cpu")
 
     if USE_GPU:
         if torch.cuda.is_available():

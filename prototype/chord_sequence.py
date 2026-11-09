@@ -8,7 +8,7 @@ import scipy.ndimage
 import scipy.io.wavfile as wavfile
 import librosa
 import torch
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
@@ -425,11 +425,27 @@ def identify_audio_chord_sequence(audio_path: str,
                                   split_strums: bool = False,
                                   save_synth: bool = False,
                                   synth_out_path: str = "sequence_synth.wav",
-                                  tab_out_path: str = "output_tabs.txt") -> List[dict]:
+                                  tab_out_path: str = "output_tabs.txt",
+                                  start_sec: Optional[float] = None,
+                                  end_sec: Optional[float] = None) -> List[dict]:
     start_time = time.time()
     print(f"\n[TabsGeneration] Loading audio from '{audio_path}' for chord sequence analysis...")
     y, sr = librosa.load(audio_path, sr=16000, mono=True)
     dur = len(y) / sr
+
+    # Slice targeted segment if specified
+    time_offset = 0.0
+    if start_sec is not None or end_sec is not None:
+        total_len = len(y)
+        s_idx = max(0, int(start_sec * sr)) if start_sec is not None else 0
+        e_idx = min(total_len, int(end_sec * sr)) if end_sec is not None else total_len
+        if s_idx < e_idx:
+            time_offset = s_idx / sr
+            print(f"   [Segment Targeting] Slicing {time_offset:.2f}s to {e_idx/sr:.2f}s "
+                  f"({(e_idx - s_idx)/sr:.2f}s duration)")
+            y = y[s_idx:e_idx]
+            dur = len(y) / sr
+
     print(f"Loaded {len(y)} samples at {sr} Hz ({dur:.2f}s duration).")
 
     print("\n1. Performing Harmonic Segmentation & Multi-Chord Detection...")
@@ -439,6 +455,12 @@ def identify_audio_chord_sequence(audio_path: str,
         energy_threshold=energy_threshold,
         split_strums=split_strums
     )
+
+    # Shift timestamps by time_offset if a subsegment was targeted
+    if time_offset > 0:
+        for seg in segments:
+            seg["start"] += time_offset
+            seg["end"] += time_offset
     print(f"   Found {len(segments)} distinct chord segments.")
 
     print("\n2. Performing Acoustic Synthesis & Waveform Verification for each chord...")
@@ -487,6 +509,10 @@ if __name__ == "__main__":
                         help="Output path for synthesized audio (default: sequence_synth.wav)")
     parser.add_argument("--tab-out", type=str, default="output_tabs.txt",
                         help="Output path for formatted tablature text file (default: output_tabs.txt)")
+    parser.add_argument("--start", type=float, default=None,
+                        help="Start time in seconds for targeted segment execution")
+    parser.add_argument("--end", type=float, default=None,
+                        help="End time in seconds for targeted segment execution")
     args = parser.parse_args()
 
     identify_audio_chord_sequence(
@@ -496,5 +522,7 @@ if __name__ == "__main__":
         split_strums=args.split_strums,
         save_synth=args.save_synth,
         synth_out_path=args.synth_out,
-        tab_out_path=args.tab_out
+        tab_out_path=args.tab_out,
+        start_sec=args.start,
+        end_sec=args.end
     )

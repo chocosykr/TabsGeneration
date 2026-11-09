@@ -123,9 +123,39 @@ When running, `prototype/device_config.py` will automatically detect your dedica
 
 ## Usage
 
-You can run the pipeline either via the unified CLI (`prototype/cli.py`) or directly through `prototype/main.py`.
+### 0. Interactive Web UI (Audio Player, Spectrogram & Segment Selector)
 
-### 1. Transcribe a Full 4-String Chord
+Launch the browser-based inspector interface to listen to audio, view its STFT spectrogram, select targeted segments, and evaluate transcription results visually:
+
+```bash
+./run_ui.sh
+# or via CLI
+python prototype/cli.py ui --port 8080
+```
+Open **`http://127.0.0.1:8080/`** in your browser to:
+- Play any uploaded or sample audio recording with playback scrubbing and loop support.
+- Visually inspect the harmonic spectrogram with standard ukulele tuning lines (G4, C4, E4, A4).
+- Select any targeted time interval (e.g. `0.80s` to `2.40s`) via dual sliders or direct second inputs.
+- Run targeted analysis on a single chord or the entire progression sequence.
+- Listen to the physical Karplus-Strong synthesized tab side-by-side to compare by ear.
+
+---
+
+### 1. Targeted Segment Execution via CLI
+
+You can isolate and transcribe any specific slice or chord within a recording using `--start` and `--end` (in seconds):
+
+```bash
+# Transcribe a targeted 0.5-second chord slice:
+python prototype/cli.py transcribe song.wav --start 1.25 --end 1.85 --notes 4
+
+# Transcribe a multi-chord progression across a specific 8-second window:
+python prototype/cli.py sequence song.wav --start 0.0 --end 8.0
+```
+
+---
+
+### 2. Transcribe a Full 4-String Chord
 Transcribes a chord audio file, compares candidate shapes against the input audio, and saves the synthesized output audio of the winning tab:
 
 ```powershell
