@@ -196,6 +196,54 @@ python prototype/cli.py transcribe prototype/test_B4_s1f2.wav --notes 1 --iter 0
 
 ---
 
+## Chord Sequence Identification & Progression Transcription
+
+For audio recordings containing a sequence or progression of multiple different chords (e.g. `F,C,G.wav` or `F,C.wav`), use the sequence pipeline:
+
+```powershell
+# Default: Harmonic progression view (merges repeated strums, shows strum count)
+python prototype/cli.py sequence F,C,G.wav
+
+# Strum-by-strum view: Splits repeated strums (e.g. C -> C -> C) into distinct events
+python prototype/cli.py sequence F,C.wav --split-strums --save-synth
+```
+
+### Sequence Output Example
+```text
+==================================================================================================
+                    UKULELE CHORD SEQUENCE IDENTIFICATION & TRANSCRIPTION
+==================================================================================================
+   Audio File:     F,C,G.wav
+   Duration:       8.70s  |  Total Chords Detected: 3
+   Hardware:       NVIDIA GeForce RTX 4050 Laptop GPU  |  Processing Time: 6.71s
+==================================================================================================
+
+   CHORD PROGRESSION SEQUENCE:
+   [ F Major ]  ==>  [ C Major ]  ==>  [ G Major ]
+
+--------------------------------------------------------------------------------------------------
+   CHORD SEQUENCE TIMELINE & TABLATURE:
+==================================================================================================
+  #   Time Interval      Duration  Chord       Tab (4-3-2-1)    Notes Played            Match %
+ --   ----------------  ---------  ----------  ---------------  --------------------  ---------
+ #1   1.50s - 2.69s         1.18s  F (Major)   2 - 0 - 1 - 0    [A4, C4, F4, A4]          80.9%
+ #2   3.78s - 5.22s         1.44s  C (Major)   0 - 0 - 0 - 3    [G4, C4, E4, C5]          88.9%
+ #3   6.30s - 7.49s         1.18s  G (Major)   0 - 2 - 3 - 2    [G4, D4, G4, B4]          78.4%
+--------------------------------------------------------------------------------------------------
+
+   ASCII UKULELE TABLATURE SCORE (Strings 1 to 4):
+   --------------------------------------------------------------------------------
+   String 1 (A4) |--0 --------|--3 --------|--2 --------|
+   String 2 (E4) |--1 --------|--0 --------|--3 --------|
+   String 3 (C4) |--0 --------|--0 --------|--2 --------|
+   String 4 (G4) |--2 --------|--0 --------|--0 --------|
+   --------------------------------------------------------------------------------
+                 |  [F]      |  [C]      |  [G]      |
+==================================================================================================
+```
+
+---
+
 ## CLI Options
 
 | Flag | Default | Description |
@@ -208,8 +256,12 @@ python prototype/cli.py transcribe prototype/test_B4_s1f2.wav --notes 1 --iter 0
 | `--top-n N` | `8` | Number of candidate chord shapes to evaluate with audio comparison |
 | `--audio-weight W` | `0.5` | Weight for candidate output audio comparison score in candidate selection |
 | `--spectral-weight W`| `0.5` | Weight for spectral template score in candidate selection |
+| `--sequence` | `False` | Identify and transcribe a sequence of multiple chords across time |
+| `--min-duration D` | `auto` | Minimum chord duration in seconds, or `auto` for adaptive physical onset segmentation |
+| `--split-strums` | `False` | Split repeated strums of the same chord into distinct events |
 | `--save-synth` | `False` | Save the winning candidate tab's synthesized audio to a `.wav` file |
 | `--synth-out PATH` | `output_tab_synth.wav` | Output filename for the synthesized audio file |
+| `--tab-out PATH` | `output_tabs.txt` | Output text file path where formatted tabs are written (overwritten every run) |
 
 ---
 

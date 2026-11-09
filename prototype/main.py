@@ -1,5 +1,6 @@
 import argparse
 import time
+import sys
 import scipy.io.wavfile as wavfile
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from pitch_estimation import (estimate_initial_pitch, estimate_chord_shape,
 from optimization import optimize_multi_parameters
 from fretboard_mapper import (map_parameters_to_tab, refine_chord_with_inharmonicity,
                               expected_inharmonicity, UKULELE_TUNING, freq_to_midi)
+from tab_exporter import export_single_tab_to_file
 
 # Max audio length fed to the optimizer (seconds).
 _MAX_OPT_SEC = 0.5
@@ -24,7 +26,8 @@ def process_audio_multi_notes(file_path: str,
                               spectral_weight: float = 0.5,
                               physics_weight: float = 0.0,
                               save_synth: bool = False,
-                              synth_out_path: str = "output_tab_synth.wav"):
+                              synth_out_path: str = "output_tab_synth.wav",
+                              tab_out_path: str = "output_tabs.txt"):
     """Full pipeline for N simultaneously played notes."""
     start_time = time.time()
     if num_notes == 1:
@@ -53,9 +56,13 @@ def process_audio_multi_notes(file_path: str,
     print(f"Loading audio from {file_path}...")
     # Load and force resample to 16kHz mono
     waveform_np, sample_rate = librosa.load(file_path, sr=16000, mono=True)
+    audio_dur = len(waveform_np) / sample_rate
 
     print(f"Loaded {len(waveform_np)} samples at {sample_rate} Hz "
-          f"({len(waveform_np)/sample_rate:.2f}s).")
+          f"({audio_dur:.2f}s).")
+    if audio_dur > 3.5:
+        print("   [Tip] For recordings with a sequence of different chords played, "
+              "run with '--sequence' to transcribe the full chord progression!")
 
     waveform_full = torch.from_numpy(waveform_np).unsqueeze(0)
 
@@ -133,6 +140,17 @@ def process_audio_multi_notes(file_path: str,
             dev_desc = torch.cuda.get_device_name(DEVICE) if DEVICE.type == "cuda" else "CPU"
             print(f"   Execution Time:     {elapsed:.2f}s (Device: {dev_desc})")
             print("=" * 88)
+
+            export_single_tab_to_file(
+                file_path=tab_out_path,
+                audio_path=file_path,
+                tab_result=tab_result,
+                winner_data=None,
+                strummed_strings=[1],
+                elapsed=elapsed,
+                is_single_note=True
+            )
+            print(f"\n   [Export] Formatted tablature successfully written to '{tab_out_path}'")
 
         if save_synth and synth_audio is not None:
             synth_np = synth_audio.detach().cpu().numpy()
@@ -331,6 +349,17 @@ def process_audio_multi_notes(file_path: str,
         print(f"   Execution Time:  {elapsed:.2f}s (Device: {dev_desc})")
         print("=" * 98)
 
+        export_single_tab_to_file(
+            file_path=tab_out_path,
+            audio_path=file_path,
+            tab_result=None,
+            winner_data=winner,
+            strummed_strings=strummed_strings,
+            elapsed=elapsed,
+            is_single_note=False
+        )
+        print(f"\n   [Export] Formatted tablature successfully written to '{tab_out_path}'")
+
         # Print per-string diagnostic info if available
         if "inharmonicity_scores" in refined:
             print("\n   Inharmonicity diagnostics:")
@@ -372,7 +401,28 @@ if __name__ == "__main__":
                         help="Save the winning candidate's synthesized output audio as a WAV file")
     parser.add_argument("--synth-out", type=str, default="output_tab_synth.wav",
                         help="Output path for synthesized audio of the winning candidate tab (default: output_tab_synth.wav)")
+    parser.add_argument("--tab-out", type=str, default="output_tabs.txt",
+                        help="Output path for formatted tablature text file (default: output_tabs.txt)")
+    parser.add_argument("--sequence", action="store_true",
+                        help="Identify and transcribe a sequence of multiple chords played in the audio recording")
+    parser.add_argument("--min-duration", type=str, default="auto",
+                        help="Minimum chord duration in seconds, or 'auto' for adaptive physical onset segmentation (default: auto)")
+    parser.add_argument("--split-strums", action="store_true",
+                        help="Split repeated strums of the same chord (e.g. C -> C -> C) into individual events")
     args = parser.parse_args()
+
+    if args.sequence:
+        from chord_sequence import identify_audio_chord_sequence
+        synth_out = args.synth_out if args.synth_out != "output_tab_synth.wav" else "sequence_synth.wav"
+        identify_audio_chord_sequence(
+            audio_path=args.audio_file,
+            min_duration=args.min_duration,
+            split_strums=args.split_strums,
+            save_synth=args.save_synth,
+            synth_out_path=synth_out,
+            tab_out_path=args.tab_out
+        )
+        sys.exit(0)
 
     strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
     
@@ -386,5 +436,6 @@ if __name__ == "__main__":
         audio_weight=args.audio_weight,
         spectral_weight=args.spectral_weight,
         save_synth=args.save_synth,
-        synth_out_path=args.synth_out
+        synth_out_path=args.synth_out,
+        tab_out_path=args.tab_out
     )

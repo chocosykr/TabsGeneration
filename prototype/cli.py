@@ -78,6 +78,57 @@ def main():
         default="output_tab_synth.wav", 
         help="Output path for synthesized audio of the winning candidate tab (default: output_tab_synth.wav)"
     )
+    transcribe_parser.add_argument(
+        "--tab-out",
+        type=str,
+        default="output_tabs.txt",
+        help="Output path for formatted tablature text file (default: output_tabs.txt)"
+    )
+
+    # --- SEQUENCE COMMAND ---
+    seq_parser = subparsers.add_parser(
+        "sequence",
+        help="Identify and transcribe an audio file with a sequence of different chords played"
+    )
+    seq_parser.add_argument(
+        "audio_file",
+        type=str,
+        help="Path to the ukulele WAV file with a sequence of chords"
+    )
+    seq_parser.add_argument(
+        "--min-duration",
+        type=str,
+        default="auto",
+        help="Minimum chord duration in seconds, or 'auto' for adaptive physical onset segmentation (default: auto)"
+    )
+    seq_parser.add_argument(
+        "--energy-thresh",
+        type=float,
+        default=0.005,
+        help="RMS energy threshold for silence/noise gating (default: 0.005)"
+    )
+    seq_parser.add_argument(
+        "--split-strums",
+        action="store_true",
+        help="Split repeated strums of the same chord (e.g. C -> C -> C) into individual events"
+    )
+    seq_parser.add_argument(
+        "--save-synth",
+        action="store_true",
+        help="Synthesize and save the full transcribed chord progression audio as a WAV file"
+    )
+    seq_parser.add_argument(
+        "--synth-out",
+        type=str,
+        default="sequence_synth.wav",
+        help="Output path for synthesized audio sequence (default: sequence_synth.wav)"
+    )
+    seq_parser.add_argument(
+        "--tab-out",
+        type=str,
+        default="output_tabs.txt",
+        help="Output path for formatted tablature text file (default: output_tabs.txt)"
+    )
 
     # --- SYNTHESIZE COMMAND ---
     synth_parser = subparsers.add_parser(
@@ -123,10 +174,31 @@ def main():
                 audio_weight=args.audio_weight,
                 spectral_weight=args.spectral_weight,
                 save_synth=args.save_synth,
-                synth_out_path=args.synth_out
+                synth_out_path=args.synth_out,
+                tab_out_path=args.tab_out
             )
         except Exception as e:
             print(f"Transcription failed: {e}")
+            sys.exit(1)
+
+    elif args.command == "sequence":
+        from chord_sequence import identify_audio_chord_sequence
+        if not os.path.exists(args.audio_file):
+            print(f"Error: Audio file '{args.audio_file}' not found.")
+            sys.exit(1)
+
+        try:
+            identify_audio_chord_sequence(
+                audio_path=args.audio_file,
+                min_duration=args.min_duration,
+                energy_threshold=args.energy_thresh,
+                split_strums=args.split_strums,
+                save_synth=args.save_synth,
+                synth_out_path=args.synth_out,
+                tab_out_path=args.tab_out
+            )
+        except Exception as e:
+            print(f"Chord sequence transcription failed: {e}")
             sys.exit(1)
 
     elif args.command == "synthesize":
