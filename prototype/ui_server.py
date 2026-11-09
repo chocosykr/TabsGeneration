@@ -326,22 +326,51 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             if not audio_path or not os.path.exists(audio_path):
                 self.send_json({"error": f"Audio file not found: {audio_path}"}, 400)
                 return
-            strummed = [int(s.strip()) for s in data.get("strummed", "1,2,3,4").split(",") if s.strip().isdigit()]
+
+            engine = data.get("engine", "basic_pitch")
+            voices = str(data.get("voices", "auto"))
             synth_out_path = os.path.join(SYNTH_DIR, f"synth_single_{int(time.time()*1000)}.wav")
+
             try:
-                res = process_audio_multi_notes(
-                    file_path=audio_path,
-                    num_notes=int(data.get("notes", 4)),
-                    strummed_strings=strummed,
-                    num_iterations=int(data.get("iter", 25)),
-                    lr=float(data.get("lr", 0.5)),
-                    top_n=int(data.get("top_n", 6)),
-                    save_synth=True,
-                    synth_out_path=synth_out_path,
-                    start_sec=float(data.get("start_sec", 0.0)),
-                    end_sec=float(data.get("end_sec", 0.5))
-                )
-                self.send_json(self.format_single_chord_result(res, synth_out_path))
+                if engine == "basic_pitch":
+                    from neural_transcription import transcribe_with_basic_pitch
+                    res = transcribe_with_basic_pitch(
+                        audio_path=audio_path,
+                        start_sec=float(data.get("start_sec", 0.0)),
+                        end_sec=float(data.get("end_sec", 0.5)),
+                        save_synth=True,
+                        synth_out_path=synth_out_path
+                    )
+                    self.send_json(res)
+                    return
+                else:
+                    # Physical Acoustic Engine (Analysis-by-Synthesis)
+                    strummed = [int(s.strip()) for s in data.get("strummed", "1,2,3,4").split(",") if s.strip().isdigit()]
+                    # Resolve voice count
+                    if voices == "1":
+                        num_notes = 1
+                        strummed = [1]
+                    elif voices in ("2", "3", "4"):
+                        num_notes = int(voices)
+                    else:
+                        # Auto mode: check segment duration
+                        dur = float(data.get("end_sec", 0.5)) - float(data.get("start_sec", 0.0))
+                        num_notes = 1 if dur <= 0.35 else 4
+
+                    res = process_audio_multi_notes(
+                        file_path=audio_path,
+                        num_notes=num_notes,
+                        strummed_strings=strummed,
+                        num_iterations=int(data.get("iter", 25)),
+                        lr=float(data.get("lr", 0.5)),
+                        top_n=int(data.get("top_n", 6)),
+                        save_synth=True,
+                        synth_out_path=synth_out_path,
+                        start_sec=float(data.get("start_sec", 0.0)),
+                        end_sec=float(data.get("end_sec", 0.5))
+                    )
+                    self.send_json(self.format_single_chord_result(res, synth_out_path))
+                    return
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self.send_json({"error": str(e)}, 500)
@@ -481,13 +510,20 @@ class UIRequestHandler(BaseHTTPRequestHandler):
 
     def format_single_chord_result(self, res, synth_path):
         if res.get("type") == "single_note":
+            str_idx = int(res.get("string", 1))
+            fret_val = int(res.get("fret", 0))
+            idx_map = {4: 0, 3: 1, 2: 2, 1: 3}
+            t4 = [0, 0, 0, 0]
+            t4[idx_map.get(str_idx, 3)] = fret_val
+
             return {
                 "mode": "single_note",
                 "notes": [res.get("note_name", "")],
-                "tab_4321": [0, 0, 0, int(res.get("fret", 0))],
+                "tab_4321": t4,
                 "acoustic_match": 100.0, "stft_loss": 0.0,
                 "elapsed": round(res.get("elapsed", 0.0), 2),
                 "combined_score": 100.0,
+                "device": "CPU",
                 "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None,
                 "candidates": [{"rank": i+1, "notes": c.get("open_name",""), "tab": f"String {c['string']} Fret {c['fret']}",
                                 "tab_4321": [0,0,0,c['fret']], "audio_match": round(c.get("audio_match_norm",1)*100,1),
@@ -725,6 +761,34 @@ def get_frontend_html() -> str:
 
       <!-- Action Buttons -->
       <div class="space-y-2 pt-2 border-t border-slate-800">
+
+        <!-- Engine selector -->
+        <div class="flex items-center gap-1.5">
+          <span class="text-[10px] text-slate-400 uppercase tracking-wide font-semibold shrink-0">Engine:</span>
+          <div class="flex gap-1 flex-1">
+            <button id="engineBtnNN" onclick="setEngine('basic_pitch')"
+              class="flex-1 py-1 rounded-md text-[11px] font-semibold transition border border-sky-600 bg-sky-600/20 text-sky-300">
+              🧠 Neural (BP)
+            </button>
+            <button id="engineBtnKS" onclick="setEngine('physical')"
+              class="flex-1 py-1 rounded-md text-[11px] font-semibold transition border border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200">
+              ⚙️ Physical (KS)
+            </button>
+          </div>
+        </div>
+
+        <!-- Voice count (only for Physical engine) -->
+        <div id="voiceCountRow" class="flex items-center gap-1.5 hidden">
+          <span class="text-[10px] text-slate-400 uppercase tracking-wide font-semibold shrink-0">Voices:</span>
+          <div class="flex gap-1">
+            <button class="voice-btn active-voice py-0.5 px-2 rounded text-[11px] font-semibold border border-indigo-600 bg-indigo-600/20 text-indigo-300" data-v="auto">Auto</button>
+            <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="1">1</button>
+            <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="2">2</button>
+            <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="3">3</button>
+            <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="4">4</button>
+          </div>
+        </div>
+
         <button id="runChordBtn" class="w-full py-2.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-semibold rounded-lg text-sm transition shadow flex items-center justify-center gap-1.5">
           ⚡ Transcribe Segment (Single Chord)
         </button>
@@ -774,6 +838,7 @@ def get_frontend_html() -> str:
         <h2 class="text-lg font-bold text-slate-100 flex items-center gap-2">
           🎯 Transcription Results
           <span id="resultModeBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-indigo-950 text-indigo-400 border border-indigo-800">Analysis-by-Synthesis</span>
+          <span id="engineBadge" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 hidden"></span>
         </h2>
         <p id="resultSubtitle" class="text-xs text-slate-400 mt-0.5">Targeted evaluation on selected audio slice.</p>
       </div>
@@ -857,6 +922,8 @@ def get_frontend_html() -> str:
 <script>
 /* ── State ── */
 let curFile = "", curDur = 0, waveData = null;
+let activeEngine = 'basic_pitch';
+let activeVoices  = 'auto';
 let metricMode = 'peaks';   // 'peaks' | 'rms'
 let zoomMode   = '1x';      // 'fit' | '1x' | '2x' | '4x'
 let showGuides = true;
@@ -1450,6 +1517,27 @@ function renderFretboard(tab4321) {
   Q("fretboardSvgContainer").innerHTML=svg;
 }
 
+/* ── Engine & Voice Selector ── */
+function setEngine(eng) {
+  activeEngine = eng;
+  const isKS = eng === 'physical';
+  // toggle engine pill styles
+  Q("engineBtnNN").className = `flex-1 py-1 rounded-md text-[11px] font-semibold transition border ${!isKS ? "border-sky-600 bg-sky-600/20 text-sky-300" : "border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200"}`;
+  Q("engineBtnKS").className = `flex-1 py-1 rounded-md text-[11px] font-semibold transition border ${isKS  ? "border-amber-600 bg-amber-600/20 text-amber-300" : "border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200"}`;
+  // show/hide voice count row
+  Q("voiceCountRow").classList.toggle("hidden", !isKS);
+}
+
+document.querySelectorAll(".voice-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    activeVoices = btn.dataset.v;
+    document.querySelectorAll(".voice-btn").forEach(b => {
+      const active = b.dataset.v === activeVoices;
+      b.className = `voice-btn ${active ? "active-voice py-0.5 px-2 rounded text-[11px] font-semibold border border-indigo-600 bg-indigo-600/20 text-indigo-300" : "py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white"}`;
+    });
+  });
+});
+
 /* ── Transcribe Segment ── */
 Q("runChordBtn").addEventListener("click", async () => {
   if (!curFile) return;
@@ -1457,7 +1545,7 @@ Q("runChordBtn").addEventListener("click", async () => {
   Q("runChordBtn").innerHTML="⏳ Analysing…";
   try {
     const r = await fetch("/api/transcribe_segment",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,notes:4,top_n:6,iter:25})});
+      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,voices:activeVoices,top_n:6,iter:25,lr:0.5})});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     resultsSection.classList.remove("hidden"); singleCont.classList.remove("hidden"); seqCont.classList.add("hidden");
@@ -1468,6 +1556,11 @@ Q("runChordBtn").addEventListener("click", async () => {
     Q("elapsedDisplay").textContent=`${d.elapsed}s`;
     Q("combinedScoreDisplay").textContent=`${d.combined_score}%`;
     renderFretboard(d.tab_4321);
+    if(d.synth_url) synthAudio.src=d.synth_url;
+    // engine badge
+    const eb = Q("engineBadge");
+    if(d.engine||d.device){ eb.textContent=(d.engine==='basic_pitch'?'🧠 Neural':'⚙️ Physical')+` · ${d.device||''}`; eb.classList.remove("hidden"); }
+    else eb.classList.add("hidden");
     if(d.synth_url) synthAudio.src=d.synth_url;
     Q("candidatesTableBody").innerHTML="";
     d.candidates.forEach(c=>{
