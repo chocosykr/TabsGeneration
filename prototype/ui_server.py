@@ -794,7 +794,7 @@ def get_frontend_html() -> str:
       <div class="md:col-span-5 bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col items-center">
         <h3 class="text-xs font-semibold text-slate-300 mb-2 w-full text-center uppercase tracking-wide">Fretboard Fingering</h3>
         <div id="fretboardSvgContainer" class="w-full flex justify-center"></div>
-        <div class="mt-2 text-xs text-slate-400">Tab (G·C·E·A):
+        <div class="mt-2 text-xs text-slate-400">Tab (A·E·C·G):
           <span id="tabStringDisplay" class="font-mono font-bold text-sky-400 ml-1">--</span>
         </div>
       </div>
@@ -1416,7 +1416,7 @@ if (ytInput) {
 
 window.addEventListener("resize", drawWave);
 
-/* ── Fretboard SVG ── */
+/* ── Fretboard SVG (Standard Tab Orientation: A on top, G on bottom) ── */
 function renderFretboard(tab4321) {
   const frets=5, W=280, H=180, fS=40, startX=60, startY=28;
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full max-w-xs">`;
@@ -1426,11 +1426,18 @@ function renderFretboard(tab4321) {
     svg+=`<line x1="${x}" y1="${startY}" x2="${x}" y2="${startY+3*fS}" stroke="#475569" stroke-width="2"/>`;
     svg+=`<text x="${x-fS/2}" y="${startY+3*fS+20}" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="monospace">F${f}</text>`;
   }
-  ["G(4)","C(3)","E(2)","A(1)"].forEach((name,si)=>{
+  // Standard tab order: A(1) on top line, G(4) on bottom line
+  const stringLayout = [
+    { name: "A(1)", idx: 3 },
+    { name: "E(2)", idx: 2 },
+    { name: "C(3)", idx: 1 },
+    { name: "G(4)", idx: 0 }
+  ];
+  stringLayout.forEach((st, si)=>{
     const y=startY+si*fS;
-    svg+=`<text x="${startX-10}" y="${y+4}" fill="#94a3b8" font-size="10" text-anchor="end">${name}</text>`;
+    svg+=`<text x="${startX-10}" y="${y+4}" fill="#94a3b8" font-size="10" text-anchor="end">${st.name}</text>`;
     svg+=`<line x1="${startX}" y1="${y}" x2="${startX+frets*fS}" y2="${y}" stroke="#64748b" stroke-width="2"/>`;
-    const fn=tab4321[si];
+    const fn=tab4321[st.idx];
     if(fn===0){
       svg+=`<circle cx="${startX-5}" cy="${y}" r="4.5" fill="none" stroke="#38bdf8" stroke-width="2"/>`;
     } else if(fn>0&&fn<=frets){
@@ -1456,7 +1463,7 @@ Q("runChordBtn").addEventListener("click", async () => {
     resultsSection.classList.remove("hidden"); singleCont.classList.remove("hidden"); seqCont.classList.add("hidden");
     Q("acousticMatchBadge").textContent=`${d.acoustic_match}%`;
     Q("stftLossBadge").textContent=d.stft_loss;
-    Q("tabStringDisplay").textContent=`[ G:${d.tab_4321[0]} C:${d.tab_4321[1]} E:${d.tab_4321[2]} A:${d.tab_4321[3]} ]`;
+    Q("tabStringDisplay").textContent=`[ A:${d.tab_4321[3]} | E:${d.tab_4321[2]} | C:${d.tab_4321[1]} | G:${d.tab_4321[0]} ]`;
     Q("chordNotesDisplay").textContent=d.notes.join(", ");
     Q("elapsedDisplay").textContent=`${d.elapsed}s`;
     Q("combinedScoreDisplay").textContent=`${d.combined_score}%`;
