@@ -311,13 +311,16 @@ def verify_segment_acoustics(seg: dict,
 
 def generate_synthesized_sequence_audio(segments: List[dict], 
                                         total_duration: float, 
-                                        sr: int = 16000) -> np.ndarray:
+                                        sr: int = 16000,
+                                        time_offset: float = 0.0) -> np.ndarray:
     total_samples = int(total_duration * sr) + int(0.5 * sr)
     full_audio = np.zeros(total_samples, dtype=np.float32)
 
     for seg in segments:
         chord_data = seg["chord_data"]
-        start_idx = int(seg["start"] * sr)
+        # Subtract time_offset so indices are relative to the synthesized track
+        start_sec_local = max(0.0, seg["start"] - time_offset)
+        start_idx = int(start_sec_local * sr)
         dur = max(0.5, seg["duration"])
 
         pitches = chord_data["pitches_1234"]
@@ -489,7 +492,7 @@ def identify_audio_chord_sequence(audio_path: str,
 
     if save_synth and segments:
         print(f"\n3. Synthesizing full chord progression audio track to '{synth_out_path}'...")
-        synth_track = generate_synthesized_sequence_audio(segments, dur, sr=sr)
+        synth_track = generate_synthesized_sequence_audio(segments, dur, sr=sr, time_offset=time_offset)
         wavfile.write(synth_out_path, sr, (synth_track * 32767).astype(np.int16))
         print(f"   Successfully exported synthesized audio sequence to '{synth_out_path}'!")
 
