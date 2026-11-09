@@ -456,16 +456,20 @@ def identify_audio_chord_sequence(audio_path: str,
         split_strums=split_strums
     )
 
-    # Shift timestamps by time_offset if a subsegment was targeted
+    print(f"   Found {len(segments)} distinct chord segments.")
+
+    # Verify acoustics BEFORE shifting timestamps (y is still the local slice)
+    print("\n2. Performing Acoustic Synthesis & Waveform Verification for each chord...")
+    for idx, seg in enumerate(segments, 1):
+        verify_segment_acoustics(seg, y, sr)
+
+    # Shift timestamps by time_offset AFTER acoustic verification
     if time_offset > 0:
         for seg in segments:
             seg["start"] += time_offset
             seg["end"] += time_offset
-    print(f"   Found {len(segments)} distinct chord segments.")
 
-    print("\n2. Performing Acoustic Synthesis & Waveform Verification for each chord...")
     for idx, seg in enumerate(segments, 1):
-        verify_segment_acoustics(seg, y, sr)
         stft_info = f" (STFT Loss: {seg['stft_loss']:.4f})" if "stft_loss" in seg and seg['stft_loss'] > 0 else ""
         print(f"   Chord #{idx}: {seg['chord']:<4} [{seg['start']:4.2f}s - {seg['end']:4.2f}s]  ->  Tab: {seg['chord_data']['tab_4321']}  Match: {seg['confidence']*100:.1f}%{stft_info}")
 

@@ -245,6 +245,13 @@ def transcribe_with_basic_pitch(
 
     avg_conf = float(np.mean(note_confidences) * 100.0) if note_confidences else 90.0
 
+    # Build raw detections list: each detected MIDI note with confidence
+    note_names_all = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+    raw_detections = []
+    for midi, conf in zip(detected_midis, note_confidences):
+        name = f"{note_names_all[midi % 12]}{midi // 12 - 1}"
+        raw_detections.append({"midi": int(midi), "name": name, "confidence": round(float(conf) * 100, 1)})
+
     return {
         "engine": "Spotify Basic Pitch (Neural Network)",
         "mode": tab_res["mode"],
@@ -256,6 +263,7 @@ def transcribe_with_basic_pitch(
         "elapsed": round(elapsed, 2),
         "device": "CPU (ONNX Runtime)",
         "synth_url": f"/api/audio?file={synth_out_path}" if os.path.exists(synth_out_path or "") else None,
-        "candidates": tab_res.get("candidates", [])
+        "candidates": tab_res.get("candidates", []),
+        "raw_detections": raw_detections
     }
 

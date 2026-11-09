@@ -524,7 +524,9 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 "elapsed": round(res.get("elapsed", 0.0), 2),
                 "combined_score": 100.0,
                 "device": "CPU",
+                "engine": "physical",
                 "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None,
+                "raw_detections": [{"name": res.get("note_name",""), "midi": res.get("midi",0), "confidence": 100.0}],
                 "candidates": [{"rank": i+1, "notes": c.get("open_name",""), "tab": f"String {c['string']} Fret {c['fret']}",
                                 "tab_4321": [0,0,0,c['fret']], "audio_match": round(c.get("audio_match_norm",1)*100,1),
                                 "spectral_fit": round(c.get("inharm_score",0)*100,1), "combined": 100.0,
@@ -549,6 +551,10 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 "stft_loss": round(float(c.get("audio_loss", 0.0)), 4),
                 "verdict": "WINNER" if rank == 1 else "Rejected"
             })
+        # Raw detected notes from physical engine (winner multiset)
+        winner_midis = winner.get("multiset_midis", [])
+        raw_detections = [{"name": f"{note_names[m%12]}{m//12-1}", "midi": int(m), "confidence": 100.0}
+                          for m in winner_midis]
         return {
             "mode": "chord",
             "notes": res.get("notes", []),
@@ -558,6 +564,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             "combined_score": round(res.get("combined_score", 100.0), 1),
             "elapsed": round(res.get("elapsed", 0.0), 2),
             "device": torch.cuda.get_device_name(DEVICE) if DEVICE.type == "cuda" else "CPU",
+            "engine": "physical",
+            "raw_detections": raw_detections,
             "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None,
             "candidates": cands
         }
@@ -882,6 +890,11 @@ def get_frontend_html() -> str:
           <div class="flex justify-between text-xs"><span class="font-semibold text-indigo-300">🔊 Synthesized Tab Audio (Karplus-Strong)</span><span class="text-slate-400 text-[11px]">Compare by ear</span></div>
           <audio id="synthAudioPlayer" class="w-full" controls></audio>
         </div>
+        <!-- Raw Detections -->
+        <div id="rawDetectionsBox" class="bg-slate-950/60 border border-slate-700/60 rounded-lg p-2.5 hidden">
+          <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">🔬 Raw Model Detections</span>
+          <div id="rawDetectionsList" class="flex flex-wrap gap-1.5"></div>
+        </div>
         <div>
           <h4 class="text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Candidate Rankings</h4>
           <div class="overflow-x-auto max-h-44 border border-slate-800 rounded-lg">
@@ -909,10 +922,15 @@ def get_frontend_html() -> str:
       <div class="overflow-x-auto border border-slate-800 rounded-xl">
         <table class="w-full text-xs text-left text-slate-300">
           <thead class="bg-slate-950 text-slate-400 uppercase text-[10px]">
-            <tr><th class="py-2 px-3">#</th><th class="py-2 px-3">Time</th><th class="py-2 px-3">Dur</th><th class="py-2 px-3">Chord</th><th class="py-2 px-3">Tab (4-3-2-1)</th><th class="py-2 px-3">Notes</th><th class="py-2 px-3">Strums</th><th class="py-2 px-3">Match%</th></tr>
+            <tr><th class="py-2 px-3">#</th><th class="py-2 px-3">Time</th><th class="py-2 px-3">Dur</th><th class="py-2 px-3">Chord</th><th class="py-2 px-3">Tab (A-E-C-G)</th><th class="py-2 px-3">Notes</th><th class="py-2 px-3">Strums</th><th class="py-2 px-3">Match%</th></tr>
           </thead>
           <tbody id="sequenceTableBody" class="divide-y divide-slate-800/60 bg-slate-900/40"></tbody>
         </table>
+      </div>
+      <!-- ASCII Tab Notation for sequence -->
+      <div id="seqTabNotationBox" class="hidden">
+        <h4 class="text-[11px] font-semibold text-slate-300 uppercase tracking-wider mb-2">🎸 Tab Notation</h4>
+        <div id="seqTabNotation" class="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-xs text-slate-300 overflow-x-auto whitespace-pre leading-relaxed"></div>
       </div>
     </div>
   </div>
@@ -1562,6 +1580,18 @@ Q("runChordBtn").addEventListener("click", async () => {
     if(d.engine||d.device){ eb.textContent=(d.engine==='basic_pitch'?'🧠 Neural':'⚙️ Physical')+` · ${d.device||''}`; eb.classList.remove("hidden"); }
     else eb.classList.add("hidden");
     if(d.synth_url) synthAudio.src=d.synth_url;
+    // raw detections
+    const rdBox = Q("rawDetectionsBox"), rdList = Q("rawDetectionsList");
+    rdList.innerHTML = "";
+    if(d.raw_detections && d.raw_detections.length > 0){
+      rdBox.classList.remove("hidden");
+      d.raw_detections.forEach(n => {
+        const pill = document.createElement("span");
+        pill.className = "inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[11px] font-mono";
+        pill.innerHTML = `<span class="text-sky-300 font-bold">${n.name}</span><span class="text-slate-500">·</span><span class="text-emerald-400">${n.confidence}%</span>`;
+        rdList.appendChild(pill);
+      });
+    } else { rdBox.classList.add("hidden"); }
     Q("candidatesTableBody").innerHTML="";
     d.candidates.forEach(c=>{
       const tr=document.createElement("tr");
@@ -1591,9 +1621,32 @@ Q("runSequenceBtn").addEventListener("click", async () => {
     Q("sequenceTableBody").innerHTML="";
     d.segments.forEach(s=>{
       const tr=document.createElement("tr"); tr.className="hover:bg-slate-800/40";
-      tr.innerHTML=`<td class="py-2 px-3 font-bold text-sky-400">#${s.index}</td><td class="py-2 px-3 font-mono">${s.start}–${s.end}s</td><td class="py-2 px-3 font-mono">${s.duration}s</td><td class="py-2 px-3 font-bold text-indigo-300">${s.chord} <span class="text-[10px] text-slate-400 font-normal">(${s.quality})</span></td><td class="py-2 px-3 font-mono text-sky-300">${s.tab_4321.join(" - ")}</td><td class="py-2 px-3 text-slate-400">[${s.notes.join(", ")}]</td><td class="py-2 px-3">${s.strum_count}</td><td class="py-2 px-3 text-emerald-400 font-semibold">${s.confidence}%</td>`;
+      tr.innerHTML=`<td class="py-2 px-3 font-bold text-sky-400">#${s.index}</td><td class="py-2 px-3 font-mono">${s.start}–${s.end}s</td><td class="py-2 px-3 font-mono">${s.duration}s</td><td class="py-2 px-3 font-bold text-indigo-300">${s.chord} <span class="text-[10px] text-slate-400 font-normal">(${s.quality})</span></td><td class="py-2 px-3 font-mono text-sky-300">A:${s.tab_4321[3]} E:${s.tab_4321[2]} C:${s.tab_4321[1]} G:${s.tab_4321[0]}</td><td class="py-2 px-3 text-slate-400">[${s.notes.join(", ")}]</td><td class="py-2 px-3">${s.strum_count}</td><td class="py-2 px-3 text-emerald-400 font-semibold">${s.confidence}%</td>`;
       Q("sequenceTableBody").appendChild(tr);
     });
+    // Build ASCII tab notation
+    const tabBox = Q("seqTabNotationBox"), tabPre = Q("seqTabNotation");
+    if(d.segments && d.segments.length > 0){
+      tabBox.classList.remove("hidden");
+      const strings = ["A","E","C","G"]; // top to bottom: A(idx3),E(idx2),C(idx1),G(idx0)
+      const idxMap  = [3, 2, 1, 0];
+      const colW = 6;
+      let lines = strings.map(s => s + "|");
+      d.segments.forEach(seg => {
+        const label = seg.chord.padEnd(colW-1," ").substring(0,colW-1);
+        idxMap.forEach((tabIdx, row) => {
+          const fret = seg.tab_4321[tabIdx];
+          const fretStr = (fret === 0 ? "0" : String(fret));
+          lines[row] += "-" + fretStr.padEnd(colW-1,"-");
+        });
+        // append chord label row to each string? no — build label row
+      });
+      // chord name bar above
+      let chordBar = " |";
+      d.segments.forEach(seg => { chordBar += seg.chord.padEnd(colW," ").substring(0,colW); });
+      lines.forEach((l, i) => { lines[i] = l + "|"; });
+      tabPre.textContent = chordBar + "\n" + lines.join("\n");
+    } else { tabBox.classList.add("hidden"); }
     resultsSection.scrollIntoView({behavior:"smooth"});
   } catch(e){ alert("Sequence failed: "+e.message); }
   finally { Q("runSequenceBtn").disabled=false; Q("runSequenceBtn").innerHTML="🎼 Transcribe Progression (Sequence)"; }
