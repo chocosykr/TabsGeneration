@@ -267,3 +267,158 @@ def transcribe_with_basic_pitch(
         "raw_detections": raw_detections
     }
 
+
+
+def transcribe_sequence_with_basic_pitch(
+    audio_path: str,
+    start_sec: Optional[float] = None,
+    end_sec: Optional[float] = None,
+    save_synth: bool = True,
+    synth_out_path: Optional[str] = None,
+    min_chord_gap: float = 0.08,   # seconds: notes closer than this are merged into one chord
+    min_segment_dur: float = 0.15, # seconds: discard segments shorter than this
+) -> Dict[str, Any]:
+    """
+    Run Basic Pitch over a full audio segment, group simultaneous note events
+    into chord segments by time proximity, and return a sequence result dict
+    compatible with format_sequence_result.
+    """
+    start_time = time.time()
+    from basic_pitch.inference import predict
+
+    y, sr = librosa.load(audio_path, sr=16000, mono=True)
+    total_dur = len(y) / sr
+
+    # Slice targeted segment
+    s_abs = max(0.0, float(start_sec)) if start_sec is not None else 0.0
+    e_abs = min(total_dur, float(end_sec)) if end_sec is not None else total_dur
+    time_offset = s_abs
+    if s_abs < e_abs:
+        y_slice = y[int(s_abs * sr): int(e_abs * sr)]
+    else:
+        y_slice = y
+
+    # Write temp wav for Basic Pitch
+    tmp_dir = os.path.join(PROTOTYPE_DIR, "output_ui")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_wav = os.path.join(tmp_dir, f"bp_seq_{int(time.time()*1000)}.wav")
+    wavfile.write(tmp_wav, sr, (np.clip(y_slice, -1.0, 1.0) * 32767).astype(np.int16))
+
+    try:
+        _model_out, _midi, note_events = predict(
+            tmp_wav,
+            onset_threshold=0.45,
+            frame_threshold=0.25,
+            minimum_note_length=80.0
+        )
+    finally:
+        try:
+            os.remove(tmp_wav)
+        except Exception:
+            pass
+
+    elapsed = time.time() - start_time
+
+    # note_events: list of (start_sec, end_sec, pitch_midi, amplitude, pitch_bends)
+    # Sort by start time
+    note_events = sorted(note_events, key=lambda n: n[0])
+
+    # --- Group notes into chord segments by onset proximity ---
+    # Merge notes whose onsets are within min_chord_gap of the current group's onset
+    segments_raw = []  # list of {onset, offset, midis, amps}
+    for n_start, n_end, pitch, amp, _bends in note_events:
+        placed = False
+        for grp in segments_raw:
+            if abs(n_start - grp["onset"]) <= min_chord_gap:
+                grp["midis"].append(int(round(pitch)))
+                grp["amps"].append(float(amp))
+                grp["offset"] = max(grp["offset"], float(n_end))
+                placed = True
+                break
+        if not placed:
+            segments_raw.append({
+                "onset": float(n_start),
+                "offset": float(n_end),
+                "midis": [int(round(pitch))],
+                "amps": [float(amp)]
+            })
+
+    # Sort by onset and merge overlapping groups
+    segments_raw.sort(key=lambda g: g["onset"])
+
+    # Filter too-short segments, build final segment list
+    result_segments = []
+    for idx, grp in enumerate(segments_raw, 1):
+        dur = grp["offset"] - grp["onset"]
+        if dur < min_segment_dur:
+            continue
+
+        tab_res = map_pitches_to_ukulele_tab(grp["midis"])
+        note_names_all = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+        raw_det = [{"midi": m, "name": f"{note_names_all[m%12]}{m//12-1}",
+                    "confidence": round(a * 100, 1)}
+                   for m, a in zip(grp["midis"], grp["amps"])]
+        avg_conf = float(np.mean(grp["amps"]) * 100.0) if grp["amps"] else 80.0
+
+        # Map tab_4321 → pitches for the notes row
+        notes = tab_res["notes"]
+        tab_4321 = tab_res["tab_4321"]
+
+        result_segments.append({
+            "index": idx,
+            "chord": notes[0].rstrip("0123456789") if notes else "?",  # root note as label
+            "quality": tab_res["mode"],
+            "start": round(grp["onset"] + time_offset, 3),
+            "end": round(grp["offset"] + time_offset, 3),
+            "duration": round(dur, 3),
+            "strum_count": len(grp["midis"]),
+            "tab_4321": tab_4321,
+            "notes": notes,
+            "confidence": round(avg_conf, 1),
+            "stft_loss": 0.0,
+            "raw_detections": raw_det,
+            # Keep chord_data for synth generation compatibility
+            "chord_data": {
+                "tab_4321": tab_4321,
+                "tab_1234": list(reversed(tab_4321)),
+                "notes_4321": notes,
+                "quality": tab_res["mode"],
+                "pitches_1234": [
+                    UKULELE_TUNING[s]["freq"] * (2.0 ** (tab_4321[4-s] / 12.0))
+                    for s in [1, 2, 3, 4]
+                ],
+            },
+            "acoustic_match": round(avg_conf, 1),
+        })
+
+    # Reindex after filtering
+    for i, seg in enumerate(result_segments, 1):
+        seg["index"] = i
+
+    # Build progression flow string
+    progression = " -> ".join(f"[{s['chord']}]" for s in result_segments)
+
+    # Build synth audio track
+    synth_url = None
+    if save_synth and synth_out_path and result_segments:
+        try:
+            from chord_sequence import generate_synthesized_sequence_audio
+            dur_local = e_abs - s_abs
+            synth_track = generate_synthesized_sequence_audio(
+                result_segments, dur_local, sr=sr, time_offset=time_offset
+            )
+            os.makedirs(os.path.dirname(os.path.abspath(synth_out_path)), exist_ok=True)
+            import scipy.io.wavfile as _wf
+            _wf.write(synth_out_path, sr, (synth_track * 32767).astype(np.int16))
+            synth_url = f"/api/audio?file={synth_out_path}"
+        except Exception as exc:
+            print(f"[neural_transcription] Synth generation failed: {exc}")
+
+    return {
+        "engine": "basic_pitch",
+        "total_chords": len(result_segments),
+        "progression_flow": progression,
+        "segments": result_segments,
+        "synth_url": synth_url,
+        "elapsed": round(time.time() - start_time, 2),
+    }

@@ -383,17 +383,29 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Audio file not found: {audio_path}"}, 400)
                 return
             synth_out_path = os.path.join(SYNTH_DIR, f"synth_seq_{int(time.time()*1000)}.wav")
+            engine = data.get("engine", "physical")
             try:
-                segments = identify_audio_chord_sequence(
-                    audio_path=audio_path,
-                    min_duration=data.get("min_duration", "auto"),
-                    split_strums=bool(data.get("split_strums", False)),
-                    save_synth=True,
-                    synth_out_path=synth_out_path,
-                    start_sec=float(data["start_sec"]) if data.get("start_sec") is not None else None,
-                    end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None
-                )
-                self.send_json(self.format_sequence_result(segments, synth_out_path))
+                if engine == "basic_pitch":
+                    from neural_transcription import transcribe_sequence_with_basic_pitch
+                    result = transcribe_sequence_with_basic_pitch(
+                        audio_path=audio_path,
+                        start_sec=float(data["start_sec"]) if data.get("start_sec") is not None else None,
+                        end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None,
+                        save_synth=True,
+                        synth_out_path=synth_out_path,
+                    )
+                    self.send_json(result)
+                else:
+                    segments = identify_audio_chord_sequence(
+                        audio_path=audio_path,
+                        min_duration=data.get("min_duration", "auto"),
+                        split_strums=bool(data.get("split_strums", False)),
+                        save_synth=True,
+                        synth_out_path=synth_out_path,
+                        start_sec=float(data["start_sec"]) if data.get("start_sec") is not None else None,
+                        end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None
+                    )
+                    self.send_json(self.format_sequence_result(segments, synth_out_path))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self.send_json({"error": str(e)}, 500)
@@ -587,7 +599,7 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             })
         prog_str = " -> ".join(f"[{s['chord']} {s['quality']}]" for s in seg_list)
         return {
-            "mode": "sequence", "progression_flow": prog_str,
+            "engine": "physical", "mode": "sequence", "progression_flow": prog_str,
             "total_chords": len(segments), "segments": seg_list,
             "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None
         }
@@ -912,7 +924,10 @@ def get_frontend_html() -> str:
     <!-- Sequence Results -->
     <div id="sequenceContainer" class="space-y-4 hidden">
       <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
-        <span class="text-[11px] text-slate-400 block mb-1">Progression:</span>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-[11px] text-slate-400">Progression:</span>
+          <span id="seqEngineBadge" class="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 hidden"></span>
+        </div>
         <div id="progressionFlowDisplay" class="text-sm font-semibold text-sky-400 font-mono"></div>
       </div>
       <div class="bg-indigo-950/30 border border-indigo-900/40 rounded-xl p-3.5 space-y-1.5">
@@ -1612,11 +1627,15 @@ Q("runSequenceBtn").addEventListener("click", async () => {
   Q("runSequenceBtn").innerHTML="⏳ Segmenting…";
   try {
     const r = await fetch("/api/transcribe_sequence",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,min_duration:"auto",split_strums:false})});
+      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,min_duration:"auto",split_strums:false})});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     resultsSection.classList.remove("hidden"); singleCont.classList.add("hidden"); seqCont.classList.remove("hidden");
     Q("progressionFlowDisplay").textContent=d.progression_flow||"No chords detected.";
+    // engine badge
+    const seb = Q("seqEngineBadge");
+    if(d.engine){ seb.textContent=(d.engine==='basic_pitch'?'🧠 Neural (Basic Pitch)':'⚙️ Physical (KS)'); seb.classList.remove("hidden"); }
+    else seb.classList.add("hidden");
     if(d.synth_url) seqSynthAudio.src=d.synth_url;
     Q("sequenceTableBody").innerHTML="";
     d.segments.forEach(s=>{
