@@ -3,3 +3,4 @@ torchaudio
 librosa
 numpy
 scipy
+yt-dlp

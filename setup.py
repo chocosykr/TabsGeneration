@@ -11,7 +11,8 @@ setup(
         "librosa",
         "numpy",
         "scipy",
-        "tqdm"
+        "tqdm",
+        "yt-dlp"
     ],
     entry_points={
         "console_scripts": [

@@ -197,17 +197,28 @@ def main():
     args = parser.parse_args()
 
     # Route to appropriate logic
+    def resolve_audio_path(path_or_url: str) -> str:
+        if path_or_url.startswith(("http://", "https://", "www.youtube.com", "youtu.be", "youtube.com")):
+            print(f"\n[TabsGeneration] Detected web / YouTube link: {path_or_url}")
+            print("   Downloading audio and converting to WAV via yt-dlp & ffmpeg...")
+            from ui_server import download_youtube_audio
+            res = download_youtube_audio(path_or_url)
+            print(f"   Successfully extracted: {res['title']} ({res['size_kb']} KB) -> '{res['path']}'\n")
+            return res['path']
+        return path_or_url
+
     if args.command == "transcribe":
         from main import process_audio_multi_notes
-        if not os.path.exists(args.audio_file):
-            print(f"Error: Audio file '{args.audio_file}' not found.")
+        audio_file = resolve_audio_path(args.audio_file)
+        if not os.path.exists(audio_file):
+            print(f"Error: Audio file '{audio_file}' not found.")
             sys.exit(1)
             
         strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
         
         try:
             process_audio_multi_notes(
-                file_path=args.audio_file, 
+                file_path=audio_file, 
                 num_notes=args.notes, 
                 strummed_strings=strummed_strings, 
                 num_iterations=args.iter, 
@@ -227,13 +238,14 @@ def main():
 
     elif args.command == "sequence":
         from chord_sequence import identify_audio_chord_sequence
-        if not os.path.exists(args.audio_file):
-            print(f"Error: Audio file '{args.audio_file}' not found.")
+        audio_file = resolve_audio_path(args.audio_file)
+        if not os.path.exists(audio_file):
+            print(f"Error: Audio file '{audio_file}' not found.")
             sys.exit(1)
 
         try:
             identify_audio_chord_sequence(
-                audio_path=args.audio_file,
+                audio_path=audio_file,
                 min_duration=args.min_duration,
                 energy_threshold=args.energy_thresh,
                 split_strums=args.split_strums,

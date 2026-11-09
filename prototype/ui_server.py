@@ -46,6 +46,65 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(SYNTH_DIR, exist_ok=True)
 
 
+def download_youtube_audio(url: str, output_dir: str = UPLOAD_DIR) -> Dict[str, Any]:
+    """Download audio from a YouTube link, extract WAV via ffmpeg, and return file metadata."""
+    import re
+    import yt_dlp
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_template = os.path.join(output_dir, "yt_%(id)s.%(ext)s")
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': out_template,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'wav',
+        }],
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        video_id = info.get("id", f"yt_{int(time.time())}")
+        title = info.get("title", "YouTube Audio")
+        duration = float(info.get("duration", 0) or 0)
+
+        wav_path = os.path.join(output_dir, f"yt_{video_id}.wav")
+        if not os.path.exists(wav_path):
+            for fname in os.listdir(output_dir):
+                if video_id in fname and fname.endswith(".wav"):
+                    wav_path = os.path.join(output_dir, fname)
+                    break
+
+        if not os.path.exists(wav_path):
+            raise FileNotFoundError(f"Could not locate extracted WAV file for YouTube video '{video_id}'")
+
+        # Create a human-friendly name with title
+        clean_title = re.sub(r'[^\w\s\-]', '', title).strip()[:40]
+        friendly_name = f"yt_{clean_title}_{video_id[:6]}.wav" if clean_title else f"yt_{video_id}.wav"
+        friendly_path = os.path.join(output_dir, friendly_name)
+
+        if wav_path != friendly_path and not os.path.exists(friendly_path):
+            try:
+                os.rename(wav_path, friendly_path)
+                wav_path = friendly_path
+            except Exception:
+                pass
+
+        size_kb = os.path.getsize(wav_path) / 1024.0
+        return {
+            "success": True,
+            "title": title,
+            "filename": os.path.basename(wav_path),
+            "path": os.path.abspath(wav_path),
+            "duration": round(duration, 2),
+            "size_kb": round(size_kb, 1)
+        }
+
+
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Multi-threaded HTTP server for responsive concurrent playback and transcription."""
     daemon_threads = True
@@ -315,6 +374,20 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             self.handle_file_upload()
             return
 
+        if path == "/api/youtube":
+            data = self.read_json_body()
+            url = data.get("url", "").strip()
+            if not url:
+                self.send_json({"error": "Please provide a valid YouTube URL."}, 400)
+                return
+            try:
+                res = download_youtube_audio(url)
+                self.send_json(res)
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self.send_json({"error": f"Failed to download YouTube audio: {str(e)}"}, 500)
+            return
+
         self.send_error(404, "Not Found")
 
     def read_json_body(self) -> Dict[str, Any]:
@@ -542,6 +615,24 @@ def get_frontend_html() -> str:
       <select id="audioSelect" class="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-sky-500">
         <option value="">Loading…</option>
       </select>
+
+      <!-- YouTube Import Box -->
+      <div class="bg-slate-950/70 border border-red-900/40 rounded-lg p-2.5 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-red-400 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 fill-red-500" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            Import from YouTube Link
+          </span>
+          <span id="ytStatusBadge" class="text-[10px] text-slate-500 font-mono"></span>
+        </div>
+        <div class="flex gap-1.5">
+          <input type="text" id="ytUrlInput" placeholder="https://www.youtube.com/watch?v=... or youtu.be/..."
+                 class="flex-1 bg-slate-900 border border-slate-700/80 rounded px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500 font-mono">
+          <button id="ytDownloadBtn" class="px-3 py-1.5 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded text-xs font-semibold flex items-center gap-1 transition disabled:opacity-50">
+            <span>⬇ Convert</span>
+          </button>
+        </div>
+      </div>
 
       <!-- ══ WAVEFORM VISUALIZER ══ -->
       <div class="bg-[#0a0f1c] border border-slate-800 rounded-xl p-3 space-y-2.5">
@@ -1270,6 +1361,58 @@ Q("fileUploadInput").addEventListener("change", async ev => {
     audioSel.value = d.path; loadAudio(d.path);
   }
 });
+
+/* ── YouTube Download & Load ── */
+const ytInput = Q("ytUrlInput"), ytBtn = Q("ytDownloadBtn"), ytBadge = Q("ytStatusBadge");
+
+async function handleYoutubeDownload() {
+  const url = (ytInput.value || "").trim();
+  if (!url) {
+    ytBadge.textContent = "Please enter a URL";
+    ytBadge.className = "text-[10px] text-amber-400 font-mono";
+    return;
+  }
+  ytBtn.disabled = true;
+  ytBtn.innerHTML = `<span>⏳ Converting…</span>`;
+  ytBadge.textContent = "Downloading & converting to WAV…";
+  ytBadge.className = "text-[10px] text-sky-400 font-mono animate-pulse";
+
+  try {
+    const res = await fetch("/api/youtube", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+
+    ytBadge.textContent = `Ready: ${d.filename}`;
+    ytBadge.className = "text-[10px] text-emerald-400 font-mono";
+
+    const opt = document.createElement("option");
+    opt.value = d.path;
+    opt.textContent = `[YouTube] ${d.title} (${d.size_kb} KB)`;
+    audioSel.insertBefore(opt, audioSel.firstChild);
+    audioSel.value = d.path;
+
+    ytInput.value = "";
+    await loadAudio(d.path);
+  } catch (err) {
+    ytBadge.textContent = "Error: " + err.message;
+    ytBadge.className = "text-[10px] text-rose-400 font-mono";
+    alert("YouTube import failed: " + err.message);
+  } finally {
+    ytBtn.disabled = false;
+    ytBtn.innerHTML = `<span>⬇ Convert</span>`;
+  }
+}
+
+if (ytBtn) ytBtn.addEventListener("click", handleYoutubeDownload);
+if (ytInput) {
+  ytInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") handleYoutubeDownload();
+  });
+}
 
 window.addEventListener("resize", drawWave);
 
