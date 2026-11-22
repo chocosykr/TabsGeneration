@@ -46,6 +46,34 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(SYNTH_DIR, exist_ok=True)
 
 
+def _resolve_ffmpeg_location() -> Optional[str]:
+    """Ensure ffmpeg and ffprobe are available on PATH, falling back to static-ffmpeg."""
+    import shutil
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    if not (ffmpeg_path and ffprobe_path):
+        try:
+            import static_ffmpeg
+            static_ffmpeg.add_paths()
+        except Exception as exc:
+            raise RuntimeError(
+                "ffmpeg and ffprobe were not found on PATH and static-ffmpeg failed to initialize: "
+                f"{exc}. Install ffmpeg or run: pip install static-ffmpeg"
+            ) from exc
+        ffmpeg_path = shutil.which("ffmpeg")
+        ffprobe_path = shutil.which("ffprobe")
+
+    if not (ffmpeg_path and ffprobe_path):
+        raise RuntimeError(
+            "ffmpeg and ffprobe were not found on PATH. "
+            "Install ffmpeg or run: pip install static-ffmpeg"
+        )
+
+    ffmpeg_dir = os.path.dirname(ffmpeg_path)
+    return ffmpeg_dir if ffmpeg_dir == os.path.dirname(ffprobe_path) else None
+
+
 def download_youtube_audio(url: str, output_dir: str = UPLOAD_DIR) -> Dict[str, Any]:
     """Download audio from a YouTube link, extract WAV via ffmpeg, and return file metadata."""
     import re
@@ -53,6 +81,7 @@ def download_youtube_audio(url: str, output_dir: str = UPLOAD_DIR) -> Dict[str, 
 
     os.makedirs(output_dir, exist_ok=True)
     out_template = os.path.join(output_dir, "yt_%(id)s.%(ext)s")
+    ffmpeg_dir = _resolve_ffmpeg_location()
 
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -65,6 +94,8 @@ def download_youtube_audio(url: str, output_dir: str = UPLOAD_DIR) -> Dict[str, 
         'quiet': True,
         'no_warnings': True,
     }
+    if ffmpeg_dir:
+        ydl_opts['ffmpeg_location'] = ffmpeg_dir
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
