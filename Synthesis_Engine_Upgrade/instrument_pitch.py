@@ -11,6 +11,12 @@ Key changes from pitch_estimation.py:
   - Analysis window length comes from InstrumentProfile.analysis_window_sec.
   - Post-attack transient skip comes from InstrumentProfile.post_attack_skip_ms.
 """
+import numpy as np
+
+def freq_to_midi(freq: float) -> float:
+    if freq <= 0:
+        return 0.0
+    return 69.0 + 12.0 * np.log2(freq / 440.0)
 
 import numpy as np
 import librosa
