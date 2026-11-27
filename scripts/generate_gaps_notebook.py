@@ -31,9 +31,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "## 1 · Install Additional Dependencies\n",
+    "## 1 · Install Dependencies\n",
     "\n",
-    "Note: Kaggle already has GPU-accelerated PyTorch, Librosa, NumPy, and SciPy pre-installed. We only install the extra packages needed (`pretty_midi`, `basic-pitch`, `huggingface_hub`, `tabulate`)."
+    "We install `pretty_midi` with `--no-build-isolation` to use Kaggle's existing pre-compiled NumPy, avoiding unnecessary source builds."
    ]
   },
   {
@@ -42,8 +42,12 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Install extra packages into active kernel environment\n",
-    "%pip install -q pretty_midi basic-pitch huggingface_hub tabulate\n",
+    "# 1. Install pretty_midi using Kaggle's existing pre-compiled NumPy\n",
+    "!pip install --no-build-isolation pretty_midi\n",
+    "\n",
+    "# 2. Install basic-pitch and utilities\n",
+    "!pip install -q basic-pitch huggingface_hub tabulate mido\n",
+    "\n",
     "import pretty_midi\n",
     "import basic_pitch\n",
     "print(\"✅ All dependencies verified and ready.\")"
@@ -192,11 +196,10 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Self-healing import check\n",
     "try:\n",
     "    import pretty_midi\n",
     "except ImportError:\n",
-    "    !pip install -q pretty_midi\n",
+    "    !pip install --no-build-isolation pretty_midi\n",
     "    import pretty_midi\n",
     "\n",
     "from typing import List, Dict, Any\n",
@@ -263,7 +266,6 @@ notebook = {
     "import pandas as pd\n",
     "from tabulate import tabulate\n",
     "\n",
-    "# Self-healing basic_pitch check\n",
     "try:\n",
     "    from basic_pitch.inference import predict\n",
     "except ImportError:\n",
