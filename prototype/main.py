@@ -10,7 +10,8 @@ from pitch_estimation import (estimate_initial_pitch, estimate_chord_shape,
                               _extract_peak_energy_window)
 from optimization import optimize_multi_parameters
 from fretboard_mapper import (map_parameters_to_tab, refine_chord_with_inharmonicity,
-                              expected_inharmonicity, UKULELE_TUNING, freq_to_midi)
+                              expected_inharmonicity, UKULELE_TUNING, GUITAR_TUNING,
+                              get_instrument_tuning, freq_to_midi)
 from tab_exporter import export_single_tab_to_file
 
 # Max audio length fed to the optimizer (seconds).
@@ -29,20 +30,26 @@ def process_audio_multi_notes(file_path: str,
                               synth_out_path: str = "output_tab_synth.wav",
                               tab_out_path: str = "output_tabs.txt",
                               start_sec: float = None,
-                              end_sec: float = None):
+                              end_sec: float = None,
+                              instrument: str = "ukulele"):
     """Full pipeline for N simultaneously played notes."""
     start_time = time.time()
+    is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
+    tuning = get_instrument_tuning(instrument)
+    num_strings = 6 if is_guitar else 4
+    inst_name = "Guitar" if is_guitar else "Ukulele"
+
     if num_notes == 1:
         strummed_strings = [1]
     elif strummed_strings is None:
-        strummed_strings = [1, 2, 3, 4]
+        strummed_strings = list(range(1, num_strings + 1))
 
     # --- Validate string selections ---
-    valid_strings = {1, 2, 3, 4}
+    valid_strings = set(range(1, num_strings + 1))
     if len(strummed_strings) == 0 or not set(strummed_strings) <= valid_strings:
         raise ValueError(
             f"Invalid --strummed {strummed_strings}: must be a non-empty "
-            f"subset of {sorted(valid_strings)} (ukulele strings 1-4)."
+            f"subset of {sorted(valid_strings)} ({inst_name.lower()} strings 1-{num_strings})."
         )
     if len(set(strummed_strings)) != len(strummed_strings):
         raise ValueError(f"--strummed contains duplicate strings: {strummed_strings}")
@@ -82,7 +89,7 @@ def process_audio_multi_notes(file_path: str,
     if num_notes == 1:
         # --- Single note: pYIN -> Optimizer -> Fretboard Mapper ---
         print("\n1. Estimating Initial Pitch (pYIN on onset window)...")
-        pitch = estimate_initial_pitch(waveform_full, sample_rate)
+        pitch = estimate_initial_pitch(waveform_full, sample_rate, instrument=instrument)
         pitches = [pitch]
         print(f"   Detected: {pitch:.2f} Hz")
 
@@ -110,7 +117,8 @@ def process_audio_multi_notes(file_path: str,
         tab_result = map_parameters_to_tab(
             vp['pitch'], vp['decay'], vp['inharmonicity'],
             target_audio=waveform_opt,
-            sample_rate=sample_rate
+            sample_rate=sample_rate,
+            instrument=instrument
         )
         if "error" in tab_result:
             print(f"   ERROR: {tab_result['error']}")
@@ -137,7 +145,7 @@ def process_audio_multi_notes(file_path: str,
 
             print("-" * 88)
             print(" * Audio Match: Synthesized candidate wave compared directly with input recording.")
-            print(" * Physics Fit: Compatibility with real ukulele string stiffness & inharmonicity.")
+            print(f" * Physics Fit: Compatibility with real {inst_name.lower()} string stiffness & inharmonicity.")
             print("=" * 88)
 
             print("\n" + "=" * 88)
@@ -161,7 +169,8 @@ def process_audio_multi_notes(file_path: str,
                 winner_data=None,
                 strummed_strings=[1],
                 elapsed=elapsed,
-                is_single_note=True
+                is_single_note=True,
+                instrument=instrument
             )
             print(f"\n   [Export] Formatted tablature successfully written to '{tab_out_path}'")
 
@@ -186,10 +195,11 @@ def process_audio_multi_notes(file_path: str,
     else:
         # --- Multi-note (chord): Top-N multiset search + audio comparison candidate selection ---
         print(f"\n1. Searching chord shapes on strings {strummed_strings} "
-              f"(brute-force harmonic template matching)...")
+              f"(harmonic template matching for {inst_name})...")
         chord_result = estimate_chord_shape(
             waveform_full, sample_rate, strummed_strings,
-            top_n_multisets=top_n
+            top_n_multisets=top_n,
+            instrument=instrument
         )
 
         candidates = chord_result["candidates"]
@@ -239,7 +249,7 @@ def process_audio_multi_notes(file_path: str,
 
             # Initialize inharmonicity priors for this candidate tab's fingerings
             initial_stretches = [
-                expected_inharmonicity(s, candidate["mapping"].get(s, 0))
+                expected_inharmonicity(s, candidate["mapping"].get(s, 0), instrument=instrument)
                 for s in strummed_strings
             ]
             while len(initial_stretches) < num_notes:
@@ -263,7 +273,8 @@ def process_audio_multi_notes(file_path: str,
             ]
             refined = refine_chord_with_inharmonicity(
                 candidate, active_voice_params, strummed_strings,
-                target_audio=waveform_opt, sample_rate=sample_rate
+                target_audio=waveform_opt, sample_rate=sample_rate,
+                instrument=instrument
             )
 
             max_physics = float(len(strummed_strings))
@@ -307,7 +318,8 @@ def process_audio_multi_notes(file_path: str,
         print("\n" + "=" * 98)
         print("          CANDIDATE CHORD RANKINGS (Acoustic Audio Comparison vs Input Recording)")
         print("=" * 98)
-        print(f" {'Rank':>4}   {'Candidate Notes':<22}  {'Tab (4-3-2-1)':<15}  {'Audio Match':>11}  {'Spectral Fit':>12}  {'Combined':>10}   {'Verdict':<10}")
+        tab_hdr = f"Tab ({num_strings}-1)" if not is_guitar else "Tab (6 to 1)"
+        print(f" {'Rank':>4}   {'Candidate Notes':<22}  {tab_hdr:<15}  {'Audio Match':>11}  {'Spectral Fit':>12}  {'Combined':>10}   {'Verdict':<10}")
         print(f" {'-'*4}   {'-'*22}  {'-'*15}  {'-'*11}  {'-'*12}  {'-'*10}   {'-'*10}")
         for rank, c in enumerate(evaluated, 1):
             notes = [f"{_NOTE_NAMES[m % 12]}{m // 12 - 1}" for m in c["multiset_midis"]]
@@ -349,21 +361,21 @@ def process_audio_multi_notes(file_path: str,
         mapping = refined["mapping"]
         winner_notes = [f"{_NOTE_NAMES[m % 12]}{m // 12 - 1}" for m in winner["multiset_midis"]]
         winner_notes_str = "[" + ", ".join(winner_notes) + "]"
-        tab_summary = " | ".join(f"{UKULELE_TUNING[s]['name'][0]}: {mapping.get(s, 0)}"
+        tab_summary = " | ".join(f"{tuning[s]['name'][0]}: {mapping.get(s, 0)}"
                                  for s in sorted(strummed_strings, reverse=True))
 
         print("\n" + "=" * 98)
         print("                                   FINAL TRANSCRIBED TABLATURE")
         print("=" * 98)
-        print("   Fretboard Layout (Ukulele Strings 4 to 1):")
+        print(f"   Fretboard Layout ({inst_name} Strings {num_strings} to 1):")
         for string_idx in sorted(strummed_strings, reverse=True):
             fret = mapping[string_idx]
             fret_str = f"Fret {fret}" if fret > 0 else "Fret 0 (open)"
-            base_freq = UKULELE_TUNING[string_idx]["freq"]
+            base_freq = tuning[string_idx]["freq"]
             fret_freq = base_freq * (2.0 ** (fret / 12.0))
             fret_midi = int(round(freq_to_midi(fret_freq)))
             fret_note = f"{_NOTE_NAMES[fret_midi % 12]}{fret_midi // 12 - 1}"
-            open_name = UKULELE_TUNING[string_idx]["name"]
+            open_name = tuning[string_idx]["name"]
             print(f"      String {string_idx} (open {open_name:<2}):  {fret_str:<14}  -->  {fret_note:<3} ({fret_freq:6.2f} Hz)")
 
         print("-" * 98)
@@ -382,7 +394,8 @@ def process_audio_multi_notes(file_path: str,
             winner_data=winner,
             strummed_strings=strummed_strings,
             elapsed=elapsed,
-            is_single_note=False
+            is_single_note=False,
+            instrument=instrument
         )
         print(f"\n   [Export] Formatted tablature successfully written to '{tab_out_path}'")
 
@@ -403,12 +416,16 @@ def process_audio_multi_notes(file_path: str,
             wavfile.write(synth_out_path, sample_rate, (synth_np * 32767).astype(np.int16))
             print(f"\n   Saved winning candidate synthesized output audio to '{synth_out_path}'")
 
+        tab_raw = [mapping.get(s, 0) for s in sorted(strummed_strings, reverse=True)]
         return {
             "type": "chord",
+            "instrument": "guitar" if is_guitar else "ukulele",
             "winner": winner,
             "mapping": mapping,
             "notes": winner_notes,
+            "tab_raw": tab_raw,
             "tab_4321": [mapping.get(s, 0) for s in [4, 3, 2, 1]],
+            "tab_654321": tab_raw if is_guitar else None,
             "candidates": evaluated,
             "audio_match": 100.0,
             "combined_score": float(winner['combined_score'] * 100.0),
@@ -420,13 +437,15 @@ def process_audio_multi_notes(file_path: str,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Differentiable Ukulele Tab Transcription with Candidate Audio Comparison")
+        description="Differentiable Ukulele & Guitar Tab Transcription with Candidate Audio Comparison")
     parser.add_argument("audio_file", type=str,
-                        help="Path to the ukulele WAV file")
-    parser.add_argument("--notes", type=int, default=4, choices=[1, 2, 3, 4],
-                        help="Number of simulated voices/pitches to extract (default: 4)")
-    parser.add_argument("--strummed", type=str, default="1,2,3,4",
-                        help="Comma-separated list of strummed strings (default: 1,2,3,4)")
+                        help="Path to the WAV file")
+    parser.add_argument("--instrument", type=str, default="ukulele", choices=["ukulele", "guitar"],
+                        help="Instrument profile: ukulele (4 strings) or guitar (6 strings) (default: ukulele)")
+    parser.add_argument("--notes", type=int, default=4, choices=[1, 2, 3, 4, 5, 6],
+                        help="Number of simulated voices/pitches to extract (default: 4 for uke, 6 for guitar)")
+    parser.add_argument("--strummed", type=str, default=None,
+                        help="Comma-separated list of strummed strings (default: all strings)")
     parser.add_argument("--start", type=float, default=None,
                         help="Start time in seconds for targeted segment execution")
     parser.add_argument("--end", type=float, default=None,
@@ -466,11 +485,15 @@ if __name__ == "__main__":
             synth_out_path=synth_out,
             tab_out_path=args.tab_out,
             start_sec=args.start,
-            end_sec=args.end
+            end_sec=args.end,
+            instrument=args.instrument
         )
         sys.exit(0)
 
-    strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
+    if args.strummed is not None:
+        strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
+    else:
+        strummed_strings = None
     
     process_audio_multi_notes(
         args.audio_file, 
@@ -485,5 +508,6 @@ if __name__ == "__main__":
         synth_out_path=args.synth_out,
         tab_out_path=args.tab_out,
         start_sec=args.start,
-        end_sec=args.end
+        end_sec=args.end,
+        instrument=args.instrument
     )

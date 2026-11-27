@@ -5,13 +5,18 @@ from typing import List
 
 
 # Ukulele frequency bounds: low G2 (~98 Hz) to high A5 (~880 Hz)
-_FMIN = 98.0
-_FMAX = 1050.0
+_FMIN_UKE = 98.0
+_FMAX_UKE = 1050.0
+_POLY_FMIN_UKE = 240.0
 
-# Lower bound for polyphonic pitch search.
-# Re-entrant (high-G) ukulele's lowest playable note is C4 (open C string,
-# 261.63 Hz), so searching below ~240 Hz only finds ghost sub-harmonics.
-_POLY_FMIN = 240.0
+# Guitar frequency bounds: low E2 (~82.4 Hz, search bounds down to 75 Hz) to high E6 (~1350 Hz)
+_FMIN_GUITAR = 75.0
+_FMAX_GUITAR = 1350.0
+_POLY_FMIN_GUITAR = 75.0
+
+_FMIN = _FMIN_UKE
+_FMAX = _FMAX_UKE
+_POLY_FMIN = _POLY_FMIN_UKE
 
 # How long a window to analyse for pitch (seconds)
 _ANALYSIS_WINDOW_SEC = 0.5
@@ -51,7 +56,7 @@ def _extract_peak_energy_window(y: np.ndarray, sr: int,
     return y[start:end]
 
 
-def estimate_initial_pitch(audio_tensor: torch.Tensor, sample_rate: int) -> float:
+def estimate_initial_pitch(audio_tensor: torch.Tensor, sample_rate: int, instrument: str = "ukulele") -> float:
     """
     Estimates the fundamental frequency (F0) using probabilistic YIN (pYIN)
     applied only to the peak-energy onset window of the recording.
@@ -71,11 +76,15 @@ def estimate_initial_pitch(audio_tensor: torch.Tensor, sample_rate: int) -> floa
     # --- 1. Extract the peak-energy onset window ---
     y_window = _extract_peak_energy_window(y_np, sample_rate)
 
+    is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
+    fmin = _FMIN_GUITAR if is_guitar else _FMIN_UKE
+    fmax = _FMAX_GUITAR if is_guitar else _FMAX_UKE
+
     # --- 2. Run pYIN on the window ---
     f0, voiced_flag, voiced_probs = librosa.pyin(
         y_window,
-        fmin=_FMIN,
-        fmax=_FMAX,
+        fmin=fmin,
+        fmax=fmax,
         sr=sample_rate,
     )
 
@@ -91,11 +100,12 @@ def estimate_initial_pitch(audio_tensor: torch.Tensor, sample_rate: int) -> floa
     if len(valid_f0) == 0:
         # Fallback: plain YIN on the same window, snapped to nearest semitone
         print("  pYIN found no voiced frames; falling back to YIN on onset window.")
-        f0_yin = librosa.yin(y_window, fmin=_FMIN, fmax=_FMAX, sr=sample_rate)
+        f0_yin = librosa.yin(y_window, fmin=fmin, fmax=fmax, sr=sample_rate)
         valid_f0_yin = f0_yin[~np.isnan(f0_yin)]
         if len(valid_f0_yin) == 0:
-            print("  Warning: No pitch detected at all, returning default 440.0 Hz.")
-            return 440.0
+            default_hz = 82.41 if is_guitar else 440.0
+            print(f"  Warning: No pitch detected at all, returning default {default_hz:.1f} Hz.")
+            return default_hz
         # Snap to nearest semitone
         median_hz   = float(np.median(valid_f0_yin))
         modal_midi  = int(round(69 + 12 * np.log2(median_hz / 440.0)))
@@ -157,22 +167,17 @@ def _suppress_harmonics(mag: np.ndarray, f0_hz: float, n_fft: int, sr: int,
     return mag_out
 
 
-def _ukulele_salience_search(mag: np.ndarray, n_fft: int, sr: int,
-                             num_harmonics: int = 5) -> int:
+def _salience_search(mag: np.ndarray, n_fft: int, sr: int,
+                     num_harmonics: int = 5,
+                     midi_min: int = 60,
+                     midi_max: int = 84) -> int:
     """
-    Finds the dominant fundamental frequency, explicitly constrained to the
-    25 possible MIDI notes on a standard re-entrant ukulele (C4=60 to C6=84).
-    
-    Scores each valid MIDI note by taking the sum of the magnitudes of 
-    its expected harmonics (Harmonic Sum Spectrum). This is more resilient
-    than a product when searching for a second pitch where some harmonics 
-    may have been zeroed out by the first pitch's suppression.
+    Finds the dominant fundamental frequency, constrained to a specified MIDI range.
     """
     best_midi = -1
     best_score = -1.0
     
-    # Valid ukulele range: C4 (open C string) to C6 (A string fret 15)
-    for midi in range(60, 85):
+    for midi in range(midi_min, midi_max + 1):
         f0 = 440.0 * (2 ** ((midi - 69) / 12.0))
         score = 0.0
         
@@ -200,12 +205,18 @@ def _ukulele_salience_search(mag: np.ndarray, n_fft: int, sr: int,
     return best_midi
 
 
+def _ukulele_salience_search(mag: np.ndarray, n_fft: int, sr: int,
+                             num_harmonics: int = 5) -> int:
+    return _salience_search(mag, n_fft, sr, num_harmonics=num_harmonics, midi_min=60, midi_max=84)
+
+
 def estimate_multi_pitches(audio_tensor: torch.Tensor,
                            sample_rate: int, 
-                           num_notes: int = 4) -> List[float]:
+                           num_notes: int = 4,
+                           instrument: str = "ukulele") -> List[float]:
     """
     Estimate `num_notes` dominant fundamental frequencies from a polyphonic
-    signal using an iterative constrained ukulele HSS search.
+    signal using an iterative constrained HSS search.
     """
     if audio_tensor.ndim > 1:
         audio_tensor = audio_tensor.squeeze()
@@ -219,14 +230,18 @@ def estimate_multi_pitches(audio_tensor: torch.Tensor,
     mag = np.abs(np.fft.rfft(y_window * np.hanning(len(y_window)), n=n_fft))
     
     estimated_pitches = []
+    is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
+    midi_min = 40 if is_guitar else 60
+    midi_max = 88 if is_guitar else 84
 
     for i in range(num_notes):
         # --- Find F0: Constrained HSS search on current spectrum ---
-        midi = _ukulele_salience_search(mag, n_fft, sample_rate)
+        midi = _salience_search(mag, n_fft, sample_rate, num_harmonics=5, midi_min=midi_min, midi_max=midi_max)
         
         if midi < 0:
-            print(f"  Warning: could not detect pitch {i+1}; duplicating previous pitch or falling back to 440 Hz.")
-            f0 = estimated_pitches[-1] if estimated_pitches else 440.0
+            default_p = 82.41 if is_guitar else 440.0
+            print(f"  Warning: could not detect pitch {i+1}; duplicating previous pitch or falling back to {default_p:.1f} Hz.")
+            f0 = estimated_pitches[-1] if estimated_pitches else default_p
         else:
             f0 = 440.0 * (2 ** ((midi - 69) / 12.0))
             print(f"   Pitch {i+1} (HSS) → MIDI {midi} ({f0:.2f} Hz)")
@@ -245,7 +260,8 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
                          max_fret: int = 15,
                          num_harmonics: int = 5,
                          top_n_multisets: int = 8,
-                         max_fret_span: int = 4) -> dict:
+                         max_fret_span: int = 4,
+                         instrument: str = "ukulele") -> dict:
     """
     Search over all possible chord shapes (fret combinations) on the
     specified strummed strings and score each against the observed spectrum.
@@ -283,8 +299,14 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
     n_fft = 8192
     mag = np.abs(np.fft.rfft(y_window * np.hanning(len(y_window)), n=n_fft))
 
+    is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
+    from fretboard_mapper import get_instrument_tuning, GUITAR_TUNING
+    tuning = get_instrument_tuning(instrument)
+    if is_guitar and max_fret == 15:
+        max_fret = 19
+
     # Pre-compute open-string MIDI notes and frequencies
-    open_freqs = [UKULELE_TUNING[s]["freq"] for s in strummed_strings]
+    open_freqs = [tuning[s]["freq"] for s in strummed_strings]
     open_midis = [int(round(freq_to_midi(f))) for f in open_freqs]
 
     frets_range = range(max_fret + 1)
@@ -354,7 +376,35 @@ def estimate_chord_shape(audio_tensor: torch.Tensor,
     # Value: (spectral_score, frets_tuple).
     best_per_multiset: dict[tuple[int, ...], tuple[float, tuple[int, ...]]] = {}
 
-    for frets in itertools.product(frets_range, repeat=num_strings):
+    if is_guitar and num_strings > 4:
+        from chord_sequence import GUITAR_CHORD_DEFINITIONS
+        candidate_shapes = set()
+        for name, (tab_6, _, _) in GUITAR_CHORD_DEFINITIONS.items():
+            fret_tuple = tuple(max(0, tab_6[6 - s]) for s in strummed_strings)
+            candidate_shapes.add(fret_tuple)
+            for shift in range(1, 8):
+                shifted = tuple((f + shift if f > 0 else f) for f in fret_tuple)
+                if all(f <= max_fret for f in shifted):
+                    candidate_shapes.add(shifted)
+        try:
+            detected_pitches = estimate_multi_pitches(audio_tensor, sample_rate, num_notes=min(num_strings, 4), instrument="guitar")
+            det_midis = [int(round(freq_to_midi(p))) for p in detected_pitches]
+            sample_frets = []
+            for s in strummed_strings:
+                om = open_midis[strummed_strings.index(s)]
+                s_opts = [0] + [m - om for m in det_midis if 0 <= (m - om) <= max_fret]
+                sample_frets.append(list(set(s_opts))[:4])
+            for comb in itertools.product(*sample_frets):
+                fretted = [f for f in comb if f > 0]
+                if not fretted or (max(fretted) - min(fretted)) <= max_fret_span:
+                    candidate_shapes.add(comb)
+        except Exception:
+            pass
+        frets_generator = candidate_shapes
+    else:
+        frets_generator = itertools.product(frets_range, repeat=num_strings)
+
+    for frets in frets_generator:
         # --- Fret-span constraint ---
         # A human hand can only comfortably fret notes within a ~4-fret window.
         # Open strings (fret 0) don't require a finger, so they're excluded.

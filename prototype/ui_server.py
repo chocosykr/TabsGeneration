@@ -11,6 +11,7 @@ import io
 import json
 import time
 import base64
+import threading
 import urllib.parse
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -34,10 +35,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+_mpl_lock = threading.Lock()
+
 from device_config import DEVICE
 from main import process_audio_multi_notes
 from chord_sequence import identify_audio_chord_sequence
-from fretboard_mapper import UKULELE_TUNING
+from fretboard_mapper import UKULELE_TUNING, GUITAR_TUNING, get_instrument_tuning
 
 # Storage for uploads and temporary synthesized outputs
 UPLOAD_DIR = os.path.join(PROTOTYPE_DIR, "input", "uploads")
@@ -179,54 +182,67 @@ def get_audio_waveform_data(audio_path: str, bars_per_sec: int = 50) -> Dict[str
 def generate_spectrogram_image(audio_path: str,
                                start_sec: Optional[float] = None,
                                end_sec: Optional[float] = None,
-                               show_guides: bool = True) -> Dict[str, Any]:
-    """Generate high-resolution STFT spectrogram with toggleable ukulele pitch guides."""
+                               show_guides: bool = True,
+                               instrument: str = "ukulele") -> Dict[str, Any]:
+    """Generate high-resolution STFT spectrogram with toggleable ukulele or guitar pitch guides."""
     y, sr = librosa.load(audio_path, sr=16000, mono=True)
     total_duration = len(y) / sr
+    is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
 
     n_fft = 1024
     hop_length = 256
     D = librosa.amplitude_to_db(np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length)), ref=np.max)
 
-    fig, ax = plt.subplots(figsize=(11, 4.2), dpi=120)
-    fig.patch.set_facecolor('#0f172a')
-    ax.set_facecolor('#0f172a')
+    with _mpl_lock:
+        fig, ax = plt.subplots(figsize=(11, 4.2), dpi=120)
+        fig.patch.set_facecolor('#0f172a')
+        ax.set_facecolor('#0f172a')
 
-    librosa.display.specshow(D, sr=sr, hop_length=hop_length, x_axis='time', y_axis='linear',
-                             ax=ax, cmap='magma')
-    ax.set_ylim(0, 1600)
+        librosa.display.specshow(D, sr=sr, hop_length=hop_length, x_axis='time', y_axis='linear',
+                                 ax=ax, cmap='magma')
+        ax.set_ylim(0, 1600)
 
-    ax.tick_params(colors='#94a3b8', labelsize=10)
-    ax.xaxis.label.set_color('#94a3b8')
-    ax.yaxis.label.set_color('#94a3b8')
-    ax.set_xlabel("Time (seconds)", fontsize=11, fontweight='bold', labelpad=6)
-    ax.set_ylabel("Frequency (Hz)", fontsize=11, fontweight='bold', labelpad=6)
-    for spine in ax.spines.values():
-        spine.set_color('#334155')
+        ax.tick_params(colors='#94a3b8', labelsize=10)
+        ax.xaxis.label.set_color('#94a3b8')
+        ax.yaxis.label.set_color('#94a3b8')
+        ax.set_xlabel("Time (seconds)", fontsize=11, fontweight='bold', labelpad=6)
+        ax.set_ylabel("Frequency (Hz)", fontsize=11, fontweight='bold', labelpad=6)
+        for spine in ax.spines.values():
+            spine.set_color('#334155')
 
-    if show_guides:
-        ukulele_strings = [
-            ("C4 (String 3, 261.6 Hz)", UKULELE_TUNING[3]["freq"], "#38bdf8"),
-            ("E4 (String 2, 329.6 Hz)", UKULELE_TUNING[2]["freq"], "#a855f7"),
-            ("G4 (String 4, 392.0 Hz)", UKULELE_TUNING[4]["freq"], "#4ade80"),
-            ("A4 (String 1, 440.0 Hz)", UKULELE_TUNING[1]["freq"], "#facc15"),
-        ]
-        for label, freq, color in ukulele_strings:
-            ax.axhline(freq, color=color, linestyle="--", linewidth=1.0, alpha=0.75)
-            ax.text(total_duration * 0.015, freq + 15, label, color=color, fontsize=8,
-                    bbox=dict(boxstyle="round,pad=0.2", facecolor="#0f172a", edgecolor=color, alpha=0.8))
+        if show_guides:
+            if is_guitar:
+                string_guides = [
+                    ("E2 (String 6, 82.4 Hz)", GUITAR_TUNING[6]["freq"], "#ef4444"),
+                    ("A2 (String 5, 110.0 Hz)", GUITAR_TUNING[5]["freq"], "#f97316"),
+                    ("D3 (String 4, 146.8 Hz)", GUITAR_TUNING[4]["freq"], "#eab308"),
+                    ("G3 (String 3, 196.0 Hz)", GUITAR_TUNING[3]["freq"], "#22c55e"),
+                    ("B3 (String 2, 246.9 Hz)", GUITAR_TUNING[2]["freq"], "#06b6d4"),
+                    ("E4 (String 1, 329.6 Hz)", GUITAR_TUNING[1]["freq"], "#a855f7"),
+                ]
+            else:
+                string_guides = [
+                    ("C4 (String 3, 261.6 Hz)", UKULELE_TUNING[3]["freq"], "#38bdf8"),
+                    ("E4 (String 2, 329.6 Hz)", UKULELE_TUNING[2]["freq"], "#a855f7"),
+                    ("G4 (String 4, 392.0 Hz)", UKULELE_TUNING[4]["freq"], "#4ade80"),
+                    ("A4 (String 1, 440.0 Hz)", UKULELE_TUNING[1]["freq"], "#facc15"),
+                ]
+            for label, freq, color in string_guides:
+                ax.axhline(freq, color=color, linestyle="--", linewidth=1.0, alpha=0.75)
+                ax.text(total_duration * 0.015, freq + 15, label, color=color, fontsize=8,
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="#0f172a", edgecolor=color, alpha=0.8))
 
-    if start_sec is not None and end_sec is not None and end_sec > start_sec:
-        s = max(0.0, float(start_sec))
-        e = min(total_duration, float(end_sec))
-        ax.axvspan(s, e, color="#38bdf8", alpha=0.25)
-        ax.axvline(s, color="#0ea5e9", linewidth=2.0, linestyle="-")
-        ax.axvline(e, color="#0ea5e9", linewidth=2.0, linestyle="-")
+        if start_sec is not None and end_sec is not None and end_sec > start_sec:
+            s = max(0.0, float(start_sec))
+            e = min(total_duration, float(end_sec))
+            ax.axvspan(s, e, color="#38bdf8", alpha=0.25)
+            ax.axvline(s, color="#0ea5e9", linewidth=2.0, linestyle="-")
+            ax.axvline(e, color="#0ea5e9", linewidth=2.0, linestyle="-")
 
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor(), edgecolor="none")
-    plt.close(fig)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor(), edgecolor="none")
+        plt.close(fig)
     buf.seek(0)
     img_b64 = base64.b64encode(buf.read()).decode("utf-8")
 
@@ -311,10 +327,11 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Audio file not found: {audio_path}"}, 400)
                 return
             show_guides = bool(data.get("show_guides", True))
+            instrument = data.get("instrument", "ukulele")
             try:
                 spec_data = generate_spectrogram_image(
                     audio_path, data.get("start_sec"), data.get("end_sec"),
-                    show_guides=show_guides)
+                    show_guides=show_guides, instrument=instrument)
                 self.send_json(spec_data)
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
@@ -329,6 +346,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
 
             engine = data.get("engine", "basic_pitch")
             voices = str(data.get("voices", "auto"))
+            instrument = data.get("instrument", "ukulele")
+            is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
             synth_out_path = os.path.join(SYNTH_DIR, f"synth_single_{int(time.time()*1000)}.wav")
 
             try:
@@ -339,23 +358,25 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         start_sec=float(data.get("start_sec", 0.0)),
                         end_sec=float(data.get("end_sec", 0.5)),
                         save_synth=True,
-                        synth_out_path=synth_out_path
+                        synth_out_path=synth_out_path,
+                        instrument=instrument
                     )
                     self.send_json(res)
                     return
                 else:
                     # Physical Acoustic Engine (Analysis-by-Synthesis)
-                    strummed = [int(s.strip()) for s in data.get("strummed", "1,2,3,4").split(",") if s.strip().isdigit()]
+                    default_strummed = "1,2,3,4,5,6" if is_guitar else "1,2,3,4"
+                    strummed = [int(s.strip()) for s in data.get("strummed", default_strummed).split(",") if s.strip().isdigit()]
                     # Resolve voice count
                     if voices == "1":
                         num_notes = 1
                         strummed = [1]
-                    elif voices in ("2", "3", "4"):
+                    elif voices in ("2", "3", "4", "5", "6"):
                         num_notes = int(voices)
                     else:
                         # Auto mode: check segment duration
                         dur = float(data.get("end_sec", 0.5)) - float(data.get("start_sec", 0.0))
-                        num_notes = 1 if dur <= 0.35 else 4
+                        num_notes = 1 if dur <= 0.35 else (6 if is_guitar else 4)
 
                     res = process_audio_multi_notes(
                         file_path=audio_path,
@@ -367,9 +388,10 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         save_synth=True,
                         synth_out_path=synth_out_path,
                         start_sec=float(data.get("start_sec", 0.0)),
-                        end_sec=float(data.get("end_sec", 0.5))
+                        end_sec=float(data.get("end_sec", 0.5)),
+                        instrument=instrument
                     )
-                    self.send_json(self.format_single_chord_result(res, synth_out_path))
+                    self.send_json(self.format_single_chord_result(res, synth_out_path, instrument=instrument))
                     return
             except Exception as e:
                 import traceback; traceback.print_exc()
@@ -384,6 +406,7 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 return
             synth_out_path = os.path.join(SYNTH_DIR, f"synth_seq_{int(time.time()*1000)}.wav")
             engine = data.get("engine", "physical")
+            instrument = data.get("instrument", "ukulele")
             try:
                 if engine == "basic_pitch":
                     from neural_transcription import transcribe_sequence_with_basic_pitch
@@ -393,6 +416,7 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None,
                         save_synth=True,
                         synth_out_path=synth_out_path,
+                        instrument=instrument
                     )
                     self.send_json(result)
                 else:
@@ -403,9 +427,10 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         save_synth=True,
                         synth_out_path=synth_out_path,
                         start_sec=float(data["start_sec"]) if data.get("start_sec") is not None else None,
-                        end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None
+                        end_sec=float(data["end_sec"]) if data.get("end_sec") is not None else None,
+                        instrument=instrument
                     )
-                    self.send_json(self.format_sequence_result(segments, synth_out_path))
+                    self.send_json(self.format_sequence_result(segments, synth_out_path, instrument=instrument))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self.send_json({"error": str(e)}, 500)
@@ -520,18 +545,28 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(buf)
 
-    def format_single_chord_result(self, res, synth_path):
+    def format_single_chord_result(self, res, synth_path, instrument="ukulele"):
+        is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
         if res.get("type") == "single_note":
             str_idx = int(res.get("string", 1))
             fret_val = int(res.get("fret", 0))
-            idx_map = {4: 0, 3: 1, 2: 2, 1: 3}
-            t4 = [0, 0, 0, 0]
-            t4[idx_map.get(str_idx, 3)] = fret_val
+            if is_guitar:
+                tab_raw = [-1, -1, -1, -1, -1, -1]
+                tab_raw[6 - str_idx] = fret_val
+                tab_4321 = tab_raw[2:]
+            else:
+                idx_map = {4: 0, 3: 1, 2: 2, 1: 3}
+                tab_4321 = [0, 0, 0, 0]
+                tab_4321[idx_map.get(str_idx, 3)] = fret_val
+                tab_raw = tab_4321
 
             return {
                 "mode": "single_note",
+                "instrument": "guitar" if is_guitar else "ukulele",
                 "notes": [res.get("note_name", "")],
-                "tab_4321": t4,
+                "tab_raw": tab_raw,
+                "tab_4321": tab_4321,
+                "tab_654321": tab_raw if is_guitar else None,
                 "acoustic_match": 100.0, "stft_loss": 0.0,
                 "elapsed": round(res.get("elapsed", 0.0), 2),
                 "combined_score": 100.0,
@@ -540,7 +575,7 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None,
                 "raw_detections": [{"name": res.get("note_name",""), "midi": res.get("midi",0), "confidence": 100.0}],
                 "candidates": [{"rank": i+1, "notes": c.get("open_name",""), "tab": f"String {c['string']} Fret {c['fret']}",
-                                "tab_4321": [0,0,0,c['fret']], "audio_match": round(c.get("audio_match_norm",1)*100,1),
+                                "tab_raw": tab_raw, "tab_4321": tab_4321, "audio_match": round(c.get("audio_match_norm",1)*100,1),
                                 "spectral_fit": round(c.get("inharm_score",0)*100,1), "combined": 100.0,
                                 "verdict": "WINNER" if i==0 else "Rejected"}
                                for i, c in enumerate(res.get("candidates", []))]
@@ -549,28 +584,34 @@ class UIRequestHandler(BaseHTTPRequestHandler):
         mapping = res.get("mapping", {})
         note_names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
         cands = []
+        strings_order = [6, 5, 4, 3, 2, 1] if is_guitar else [4, 3, 2, 1]
         for rank, c in enumerate(res.get("candidates", []), 1):
             midis = c.get("multiset_midis", [])
             notes = [f"{note_names[m%12]}{m//12-1}" for m in midis]
             c_map = c.get("refined", {}).get("mapping", c.get("mapping", {}))
+            c_raw = [c_map.get(s, 0) for s in strings_order]
             cands.append({
                 "rank": rank, "notes": ", ".join(notes),
-                "tab": " - ".join(str(c_map.get(s, 0)) for s in [4,3,2,1]),
-                "tab_4321": [c_map.get(s, 0) for s in [4,3,2,1]],
+                "tab": " - ".join("x" if f < 0 else str(f) for f in c_raw),
+                "tab_raw": c_raw,
+                "tab_4321": c_raw[2:] if is_guitar else c_raw,
                 "audio_match": round(c.get("audio_score_norm", 1.0)*100, 1),
                 "spectral_fit": round(c.get("spectral_score_norm", 0.0)*100, 1),
                 "combined": round(c.get("combined_score", 0.0)*100, 1),
                 "stft_loss": round(float(c.get("audio_loss", 0.0)), 4),
                 "verdict": "WINNER" if rank == 1 else "Rejected"
             })
-        # Raw detected notes from physical engine (winner multiset)
         winner_midis = winner.get("multiset_midis", [])
         raw_detections = [{"name": f"{note_names[m%12]}{m//12-1}", "midi": int(m), "confidence": 100.0}
                           for m in winner_midis]
+        tab_raw = [mapping.get(s, 0) for s in strings_order]
         return {
             "mode": "chord",
+            "instrument": "guitar" if is_guitar else "ukulele",
             "notes": res.get("notes", []),
-            "tab_4321": res.get("tab_4321", [0,0,0,0]),
+            "tab_raw": tab_raw,
+            "tab_4321": tab_raw[2:] if is_guitar else tab_raw,
+            "tab_654321": tab_raw if is_guitar else None,
             "acoustic_match": round(res.get("audio_match", 100.0), 1),
             "stft_loss": round(res.get("stft_loss", 0.0), 4),
             "combined_score": round(res.get("combined_score", 100.0), 1),
@@ -582,24 +623,29 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             "candidates": cands
         }
 
-    def format_sequence_result(self, segments, synth_path):
+    def format_sequence_result(self, segments, synth_path, instrument="ukulele"):
+        is_guitar = str(instrument).lower() in ("guitar", "acoustic_guitar")
         seg_list = []
         for idx, s in enumerate(segments, 1):
             c = s.get("chord_data", {})
+            tab_raw = c.get("tab_raw", c.get("tab_4321", [0, 0, 0, 0]))
+            tab_4321 = c.get("tab_4321", tab_raw[2:] if len(tab_raw) == 6 else tab_raw)
             seg_list.append({
                 "index": idx, "chord": s.get("chord", "?"),
                 "quality": c.get("quality", "Major"),
                 "start": round(s.get("start", 0.0), 2), "end": round(s.get("end", 0.0), 2),
                 "duration": round(s.get("duration", 0.0), 2),
                 "strum_count": s.get("strum_count", 1),
-                "tab_4321": c.get("tab_4321", [0,0,0,0]),
-                "notes": c.get("notes_4321", []),
+                "tab_raw": tab_raw,
+                "tab_4321": tab_4321,
+                "notes": c.get("notes_desc", c.get("notes_4321", [])),
                 "confidence": round(s.get("confidence", 0.0)*100.0, 1),
                 "stft_loss": round(float(s.get("stft_loss", 0.0)), 4)
             })
         prog_str = " -> ".join(f"[{s['chord']} {s['quality']}]" for s in seg_list)
         return {
-            "engine": "physical", "mode": "sequence", "progression_flow": prog_str,
+            "engine": "physical", "instrument": "guitar" if is_guitar else "ukulele",
+            "mode": "sequence", "progression_flow": prog_str,
             "total_chords": len(segments), "segments": seg_list,
             "synth_url": f"/api/audio?file={urllib.parse.quote(synth_path)}" if os.path.exists(synth_path) else None
         }
@@ -649,7 +695,18 @@ def get_frontend_html() -> str:
       </div>
       <p class="text-xs text-slate-400 mt-1">Select a segment on the waveform, inspect the spectrogram, then run transcription.</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2.5 flex-wrap">
+      <!-- Instrument Switcher -->
+      <div class="flex rounded-lg bg-slate-950 p-0.5 border border-slate-800 mr-1">
+        <button id="instBtnUke" onclick="setInstrument('ukulele')"
+          class="px-2.5 py-1 text-xs font-semibold rounded-md transition bg-sky-600 text-white shadow-sm flex items-center gap-1">
+          🌺 Ukulele (4-str)
+        </button>
+        <button id="instBtnGuitar" onclick="setInstrument('guitar')"
+          class="px-2.5 py-1 text-xs font-semibold rounded-md transition text-slate-400 hover:text-slate-200 flex items-center gap-1">
+          🎸 Guitar (6-str)
+        </button>
+      </div>
       <label class="cursor-pointer px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-lg flex items-center gap-1.5">
         📁 Upload <input type="file" id="fileUploadInput" accept="audio/*" class="hidden">
       </label>
@@ -806,6 +863,8 @@ def get_frontend_html() -> str:
             <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="2">2</button>
             <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="3">3</button>
             <button class="voice-btn py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white" data-v="4">4</button>
+            <button class="voice-btn voice-guitar-only py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white hidden" data-v="5">5</button>
+            <button class="voice-btn voice-guitar-only py-0.5 px-2 rounded text-[11px] font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:text-white hidden" data-v="6">6</button>
           </div>
         </div>
 
@@ -840,7 +899,7 @@ def get_frontend_html() -> str:
       </div>
 
       <div id="stringLegendContainer" class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 pt-2 border-t border-slate-800/80">
-        <div class="flex items-center gap-3">
+        <div id="stringLegendItems" class="flex items-center gap-3 flex-wrap">
           <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#38bdf8]"></span>C4 (261 Hz)</span>
           <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#a855f7]"></span>E4 (330 Hz)</span>
           <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#4ade80]"></span>G4 (392 Hz)</span>
@@ -879,7 +938,7 @@ def get_frontend_html() -> str:
       <div class="md:col-span-5 bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col items-center">
         <h3 class="text-xs font-semibold text-slate-300 mb-2 w-full text-center uppercase tracking-wide">Fretboard Fingering</h3>
         <div id="fretboardSvgContainer" class="w-full flex justify-center"></div>
-        <div class="mt-2 text-xs text-slate-400">Tab (A·E·C·G):
+        <div class="mt-2 text-xs text-slate-400"><span id="tabLabelText">Tab (A·E·C·G):</span>
           <span id="tabStringDisplay" class="font-mono font-bold text-sky-400 ml-1">--</span>
         </div>
       </div>
@@ -937,7 +996,7 @@ def get_frontend_html() -> str:
       <div class="overflow-x-auto border border-slate-800 rounded-xl">
         <table class="w-full text-xs text-left text-slate-300">
           <thead class="bg-slate-950 text-slate-400 uppercase text-[10px]">
-            <tr><th class="py-2 px-3">#</th><th class="py-2 px-3">Time</th><th class="py-2 px-3">Dur</th><th class="py-2 px-3">Chord</th><th class="py-2 px-3">Tab (A-E-C-G)</th><th class="py-2 px-3">Notes</th><th class="py-2 px-3">Strums</th><th class="py-2 px-3">Match%</th></tr>
+            <tr><th class="py-2 px-3">#</th><th class="py-2 px-3">Time</th><th class="py-2 px-3">Dur</th><th class="py-2 px-3">Chord</th><th id="seqTabHeader" class="py-2 px-3">Tab</th><th class="py-2 px-3">Notes</th><th class="py-2 px-3">Strums</th><th class="py-2 px-3">Match%</th></tr>
           </thead>
           <tbody id="sequenceTableBody" class="divide-y divide-slate-800/60 bg-slate-900/40"></tbody>
         </table>
@@ -955,6 +1014,7 @@ def get_frontend_html() -> str:
 <script>
 /* ── State ── */
 let curFile = "", curDur = 0, waveData = null;
+let curInstrument = 'ukulele';
 let activeEngine = 'basic_pitch';
 let activeVoices  = 'auto';
 let metricMode = 'peaks';   // 'peaks' | 'rms'
@@ -1069,13 +1129,20 @@ function renderOnsetChips(onsets) {
   });
 }
 
+let curSpecAbort = null;
 async function fetchSpectrogram(path, s, e) {
+  if (curSpecAbort) curSpecAbort.abort();
+  curSpecAbort = new AbortController();
   try {
     const r = await fetch("/api/spectrogram", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ file: path, start_sec: s, end_sec: e, show_guides: showGuides })
+      body: JSON.stringify({ file: path, start_sec: s, end_sec: e, show_guides: showGuides, instrument: curInstrument }),
+      signal: curSpecAbort.signal
     });
     const d = await r.json();
+    if (!r.ok || d.error) {
+      throw new Error(d.error || `HTTP ${r.status}`);
+    }
     if (d.image_base64) {
       specImg.src = `data:image/png;base64,${d.image_base64}`;
       specImg.classList.remove("hidden");
@@ -1089,7 +1156,14 @@ async function fetchSpectrogram(path, s, e) {
         syncFromSliders(false);
       }
     }
-  } catch (e) { specLoading.textContent = "Error loading spectrogram"; specStatus.textContent = "Error"; }
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    console.error("Spectrogram error:", e);
+    specLoading.textContent = `Error loading spectrogram: ${e.message || e}`;
+    specStatus.textContent = "Error";
+    specLoading.classList.remove("hidden");
+    specImg.classList.add("hidden");
+  }
 }
 
 /* ── Geometry & Layout Helpers ── */
@@ -1516,38 +1590,100 @@ if (ytInput) {
 
 window.addEventListener("resize", drawWave);
 
-/* ── Fretboard SVG (Standard Tab Orientation: A on top, G on bottom) ── */
-function renderFretboard(tab4321) {
-  const frets=5, W=280, H=180, fS=40, startX=60, startY=28;
-  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full max-w-xs">`;
-  svg += `<line x1="${startX}" y1="${startY}" x2="${startX}" y2="${startY+3*fS}" stroke="#cbd5e1" stroke-width="6" stroke-linecap="round"/>`;
-  for (let f=1;f<=frets;f++){
-    const x=startX+f*fS;
-    svg+=`<line x1="${x}" y1="${startY}" x2="${x}" y2="${startY+3*fS}" stroke="#475569" stroke-width="2"/>`;
-    svg+=`<text x="${x-fS/2}" y="${startY+3*fS+20}" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="monospace">F${f}</text>`;
+/* ── Instrument Switcher (Ukulele 🌺 vs Guitar 🎸) ── */
+function setInstrument(inst) {
+  curInstrument = inst;
+  const isGuitar = inst === 'guitar';
+  Q("instBtnUke").className = !isGuitar
+    ? "px-2.5 py-1 text-xs font-semibold rounded-md transition bg-sky-600 text-white shadow-sm flex items-center gap-1"
+    : "px-2.5 py-1 text-xs font-semibold rounded-md transition text-slate-400 hover:text-slate-200 flex items-center gap-1";
+  Q("instBtnGuitar").className = isGuitar
+    ? "px-2.5 py-1 text-xs font-semibold rounded-md transition bg-indigo-600 text-white shadow-sm flex items-center gap-1"
+    : "px-2.5 py-1 text-xs font-semibold rounded-md transition text-slate-400 hover:text-slate-200 flex items-center gap-1";
+
+  document.querySelectorAll(".voice-guitar-only").forEach(el => {
+    el.classList.toggle("hidden", !isGuitar);
+  });
+
+  const leg = Q("stringLegendItems");
+  if (leg) {
+    if (isGuitar) {
+      leg.innerHTML = `
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#ef4444]"></span>E2 (82 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#f97316]"></span>A2 (110 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#eab308]"></span>D3 (147 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#22c55e]"></span>G3 (196 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#06b6d4]"></span>B3 (247 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#a855f7]"></span>E4 (330 Hz)</span>
+      `;
+    } else {
+      leg.innerHTML = `
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#38bdf8]"></span>C4 (261 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#a855f7]"></span>E4 (330 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#4ade80]"></span>G4 (392 Hz)</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#facc15]"></span>A4 (440 Hz)</span>
+      `;
+    }
   }
-  // Standard tab order: A(1) on top line, G(4) on bottom line
-  const stringLayout = [
+
+  const tabLbl = Q("tabLabelText");
+  if (tabLbl) tabLbl.textContent = isGuitar ? "Tab (e·B·G·D·A·E):" : "Tab (A·E·C·G):";
+
+  const seqTh = Q("seqTabHeader");
+  if (seqTh) seqTh.textContent = isGuitar ? "Tab (e-B-G-D-A-E)" : "Tab (A-E-C-G)";
+
+  refreshSpec();
+}
+
+/* ── Fretboard SVG (Ukulele & Guitar Interactive Renderer) ── */
+function renderFretboard(tab, inst) {
+  const isGuitar = (inst || curInstrument) === 'guitar';
+  const numStrings = isGuitar ? 6 : 4;
+  const frets = 5, fS = 28, startX = 64, startY = 22;
+  const H = startY + (numStrings - 1) * fS + 34;
+  const W = 280;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full max-w-xs">`;
+  svg += `<line x1="${startX}" y1="${startY}" x2="${startX}" y2="${startY + (numStrings - 1) * fS}" stroke="#cbd5e1" stroke-width="6" stroke-linecap="round"/>`;
+  for (let f = 1; f <= frets; f++) {
+    const x = startX + f * 38;
+    svg += `<line x1="${x}" y1="${startY}" x2="${x}" y2="${startY + (numStrings - 1) * fS}" stroke="#475569" stroke-width="2"/>`;
+    svg += `<text x="${x - 19}" y="${startY + (numStrings - 1) * fS + 18}" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="monospace">F${f}</text>`;
+  }
+
+  const stringLayout = isGuitar ? [
+    { name: "e(1)", idx: 5 },
+    { name: "B(2)", idx: 4 },
+    { name: "G(3)", idx: 3 },
+    { name: "D(4)", idx: 2 },
+    { name: "A(5)", idx: 1 },
+    { name: "E(6)", idx: 0 }
+  ] : [
     { name: "A(1)", idx: 3 },
     { name: "E(2)", idx: 2 },
     { name: "C(3)", idx: 1 },
     { name: "G(4)", idx: 0 }
   ];
-  stringLayout.forEach((st, si)=>{
-    const y=startY+si*fS;
-    svg+=`<text x="${startX-10}" y="${y+4}" fill="#94a3b8" font-size="10" text-anchor="end">${st.name}</text>`;
-    svg+=`<line x1="${startX}" y1="${y}" x2="${startX+frets*fS}" y2="${y}" stroke="#64748b" stroke-width="2"/>`;
-    const fn=tab4321[st.idx];
-    if(fn===0){
-      svg+=`<circle cx="${startX-5}" cy="${y}" r="4.5" fill="none" stroke="#38bdf8" stroke-width="2"/>`;
-    } else if(fn>0&&fn<=frets){
-      const dx=startX+fn*fS-fS/2;
-      svg+=`<circle cx="${dx}" cy="${y}" r="7" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5"/>`;
-      svg+=`<text x="${dx}" y="${y+4}" fill="#0f172a" font-size="9" font-weight="bold" text-anchor="middle">${fn}</text>`;
+
+  const rawTab = Array.isArray(tab) ? tab : (isGuitar ? [0,0,0,0,0,0] : [0,0,0,0]);
+
+  stringLayout.forEach((st, si) => {
+    const y = startY + si * fS;
+    svg += `<text x="${startX - 10}" y="${y + 4}" fill="#94a3b8" font-size="10" text-anchor="end" font-weight="600">${st.name}</text>`;
+    svg += `<line x1="${startX}" y1="${y}" x2="${startX + frets * 38}" y2="${y}" stroke="#64748b" stroke-width="1.8"/>`;
+    const fn = rawTab[st.idx] !== undefined ? rawTab[st.idx] : 0;
+    if (fn === 0) {
+      svg += `<circle cx="${startX - 5}" cy="${y}" r="4" fill="none" stroke="#38bdf8" stroke-width="1.8"/>`;
+    } else if (fn < 0) {
+      svg += `<text x="${startX - 6}" y="${y + 4}" fill="#ef4444" font-size="12" font-weight="bold" text-anchor="middle">×</text>`;
+    } else if (fn > 0 && fn <= frets) {
+      const dx = startX + fn * 38 - 19;
+      svg += `<circle cx="${dx}" cy="${y}" r="6.5" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5"/>`;
+      svg += `<text x="${dx}" y="${y + 3.5}" fill="#0f172a" font-size="9" font-weight="bold" text-anchor="middle">${fn}</text>`;
     }
   });
-  svg+="</svg>";
-  Q("fretboardSvgContainer").innerHTML=svg;
+  svg += "</svg>";
+  Q("fretboardSvgContainer").innerHTML = svg;
 }
 
 /* ── Engine & Voice Selector ── */
@@ -1578,17 +1714,23 @@ Q("runChordBtn").addEventListener("click", async () => {
   Q("runChordBtn").innerHTML="⏳ Analysing…";
   try {
     const r = await fetch("/api/transcribe_segment",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,voices:activeVoices,top_n:6,iter:25,lr:0.5})});
+      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,voices:activeVoices,top_n:6,iter:25,lr:0.5,instrument:curInstrument})});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     resultsSection.classList.remove("hidden"); singleCont.classList.remove("hidden"); seqCont.classList.add("hidden");
     Q("acousticMatchBadge").textContent=`${d.acoustic_match}%`;
     Q("stftLossBadge").textContent=d.stft_loss;
-    Q("tabStringDisplay").textContent=`[ A:${d.tab_4321[3]} | E:${d.tab_4321[2]} | C:${d.tab_4321[1]} | G:${d.tab_4321[0]} ]`;
+    const isG = (d.instrument || curInstrument) === 'guitar';
+    if (isG && d.tab_raw && d.tab_raw.length === 6) {
+      const fmtFret = f => f < 0 ? 'x' : f;
+      Q("tabStringDisplay").textContent = `[ e:${fmtFret(d.tab_raw[5])} | B:${fmtFret(d.tab_raw[4])} | G:${fmtFret(d.tab_raw[3])} | D:${fmtFret(d.tab_raw[2])} | A:${fmtFret(d.tab_raw[1])} | E:${fmtFret(d.tab_raw[0])} ]`;
+    } else {
+      Q("tabStringDisplay").textContent = `[ A:${d.tab_4321[3]} | E:${d.tab_4321[2]} | C:${d.tab_4321[1]} | G:${d.tab_4321[0]} ]`;
+    }
     Q("chordNotesDisplay").textContent=d.notes.join(", ");
     Q("elapsedDisplay").textContent=`${d.elapsed}s`;
     Q("combinedScoreDisplay").textContent=`${d.combined_score}%`;
-    renderFretboard(d.tab_4321);
+    renderFretboard(d.tab_raw || d.tab_4321, d.instrument || curInstrument);
     if(d.synth_url) synthAudio.src=d.synth_url;
     // engine badge
     const eb = Q("engineBadge");
@@ -1627,7 +1769,7 @@ Q("runSequenceBtn").addEventListener("click", async () => {
   Q("runSequenceBtn").innerHTML="⏳ Segmenting…";
   try {
     const r = await fetch("/api/transcribe_sequence",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,min_duration:"auto",split_strums:false})});
+      body:JSON.stringify({file:curFile,start_sec:+startInp.value,end_sec:+endInp.value,engine:activeEngine,min_duration:"auto",split_strums:false,instrument:curInstrument})});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     resultsSection.classList.remove("hidden"); singleCont.classList.add("hidden"); seqCont.classList.remove("hidden");
@@ -1640,25 +1782,32 @@ Q("runSequenceBtn").addEventListener("click", async () => {
     Q("sequenceTableBody").innerHTML="";
     d.segments.forEach(s=>{
       const tr=document.createElement("tr"); tr.className="hover:bg-slate-800/40";
-      tr.innerHTML=`<td class="py-2 px-3 font-bold text-sky-400">#${s.index}</td><td class="py-2 px-3 font-mono">${s.start}–${s.end}s</td><td class="py-2 px-3 font-mono">${s.duration}s</td><td class="py-2 px-3 font-bold text-indigo-300">${s.chord} <span class="text-[10px] text-slate-400 font-normal">(${s.quality})</span></td><td class="py-2 px-3 font-mono text-sky-300">A:${s.tab_4321[3]} E:${s.tab_4321[2]} C:${s.tab_4321[1]} G:${s.tab_4321[0]}</td><td class="py-2 px-3 text-slate-400">[${s.notes.join(", ")}]</td><td class="py-2 px-3">${s.strum_count}</td><td class="py-2 px-3 text-emerald-400 font-semibold">${s.confidence}%</td>`;
+      tr.innerHTML=`<td class="py-2 px-3 font-bold text-sky-400">#${s.index}</td><td class="py-2 px-3 font-mono">${s.start}–${s.end}s</td><td class="py-2 px-3 font-mono">${s.duration}s</td><td class="py-2 px-3 font-bold text-indigo-300">${s.chord} <span class="text-[10px] text-slate-400 font-normal">(${s.quality})</span></td><td class="py-2 px-3 font-mono text-sky-300">${s.tab_str ? s.tab_str : (s.tab_raw && s.tab_raw.length === 6 ? s.tab_raw.map(f=>f<0?'x':f).join(' - ') : `A:${s.tab_4321[3]} E:${s.tab_4321[2]} C:${s.tab_4321[1]} G:${s.tab_4321[0]}`)}</td><td class="py-2 px-3 text-slate-400">[${s.notes.join(", ")}]</td><td class="py-2 px-3">${s.strum_count}</td><td class="py-2 px-3 text-emerald-400 font-semibold">${s.confidence}%</td>`;
       Q("sequenceTableBody").appendChild(tr);
     });
     // Build ASCII tab notation
     const tabBox = Q("seqTabNotationBox"), tabPre = Q("seqTabNotation");
     if(d.segments && d.segments.length > 0){
       tabBox.classList.remove("hidden");
-      const strings = ["A","E","C","G"]; // top to bottom: A(idx3),E(idx2),C(idx1),G(idx0)
-      const idxMap  = [3, 2, 1, 0];
+      const isG = (d.instrument || curInstrument) === 'guitar';
+      const strings = isG ? ["e", "B", "G", "D", "A", "E"] : ["A", "E", "C", "G"];
       const colW = 6;
       let lines = strings.map(s => s + "|");
       d.segments.forEach(seg => {
-        const label = seg.chord.padEnd(colW-1," ").substring(0,colW-1);
-        idxMap.forEach((tabIdx, row) => {
-          const fret = seg.tab_4321[tabIdx];
-          const fretStr = (fret === 0 ? "0" : String(fret));
-          lines[row] += "-" + fretStr.padEnd(colW-1,"-");
-        });
-        // append chord label row to each string? no — build label row
+        const raw = seg.tab_raw || (isG ? [-1,-1,-1,-1,-1,-1] : seg.tab_4321);
+        if (isG) {
+          for (let row = 0; row < 6; row++) {
+            const fret = raw[5 - row];
+            const fretStr = (fret === undefined || fret < 0 ? "x" : String(fret));
+            lines[row] += "-" + fretStr.padEnd(colW - 1, "-");
+          }
+        } else {
+          [3, 2, 1, 0].forEach((tabIdx, row) => {
+            const fret = seg.tab_4321[tabIdx];
+            const fretStr = (fret === 0 ? "0" : String(fret));
+            lines[row] += "-" + fretStr.padEnd(colW - 1, "-");
+          });
+        }
       });
       // chord name bar above
       let chordBar = " |";
@@ -1678,7 +1827,7 @@ init();
 """
 
 
-def start_ui_server(host: str = "127.0.0.1", port: int = 8080):
+def start_ui_server(host: str = "127.0.0.1", port: int = 8000):
     """Start the multi-threaded HTTP UI server, auto-incrementing port if needed."""
     httpd = None
     for attempt in range(10):
@@ -1712,6 +1861,6 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="TabsGeneration Interactive Web UI Server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     start_ui_server(host=args.host, port=args.port)

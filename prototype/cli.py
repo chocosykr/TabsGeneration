@@ -17,25 +17,32 @@ def main():
     # --- TRANSCRIBE COMMAND ---
     transcribe_parser = subparsers.add_parser(
         "transcribe", 
-        help="Transcribe a ukulele WAV file to tablature"
+        help="Transcribe a ukulele or guitar WAV file to tablature"
     )
     transcribe_parser.add_argument(
         "audio_file", 
         type=str, 
-        help="Path to the ukulele WAV file to transcribe"
+        help="Path to the audio WAV file to transcribe"
+    )
+    transcribe_parser.add_argument(
+        "--instrument",
+        type=str,
+        default="ukulele",
+        choices=["ukulele", "guitar"],
+        help="Instrument profile: ukulele (4 strings) or guitar (6 strings) (default: ukulele)"
     )
     transcribe_parser.add_argument(
         "--notes", 
         type=int, 
         default=4, 
-        choices=[1, 2, 3, 4], 
-        help="Number of simulated voices/strings to extract (default: 4).\nUse 1 for mono pYIN path, 2-4 for polyphonic chord search."
+        choices=[1, 2, 3, 4, 5, 6], 
+        help="Number of simulated voices/strings to extract (default: 4).\nUse 1 for mono pYIN path, 2-6 for polyphonic chord search."
     )
     transcribe_parser.add_argument(
         "--strummed", 
         type=str, 
-        default="1,2,3,4", 
-        help="Comma-separated list of strummed strings, e.g. '1,2,3' (default: 1,2,3,4)"
+        default=None, 
+        help="Comma-separated list of strummed strings, e.g. '1,2,3' (default: all strings for instrument)"
     )
     transcribe_parser.add_argument(
         "--iter", 
@@ -105,7 +112,14 @@ def main():
     seq_parser.add_argument(
         "audio_file",
         type=str,
-        help="Path to the ukulele WAV file with a sequence of chords"
+        help="Path to the WAV file with a sequence of chords"
+    )
+    seq_parser.add_argument(
+        "--instrument",
+        type=str,
+        default="ukulele",
+        choices=["ukulele", "guitar"],
+        help="Instrument profile: ukulele (4 strings) or guitar (6 strings) (default: ukulele)"
     )
     seq_parser.add_argument(
         "--start",
@@ -214,7 +228,10 @@ def main():
             print(f"Error: Audio file '{audio_file}' not found.")
             sys.exit(1)
             
-        strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
+        if args.strummed is not None:
+            strummed_strings = [int(s.strip()) for s in args.strummed.split(",") if s.strip().isdigit()]
+        else:
+            strummed_strings = None
         
         try:
             process_audio_multi_notes(
@@ -230,7 +247,8 @@ def main():
                 synth_out_path=args.synth_out,
                 tab_out_path=args.tab_out,
                 start_sec=args.start,
-                end_sec=args.end
+                end_sec=args.end,
+                instrument=args.instrument
             )
         except Exception as e:
             print(f"Transcription failed: {e}")
@@ -253,7 +271,8 @@ def main():
                 synth_out_path=args.synth_out,
                 tab_out_path=args.tab_out,
                 start_sec=args.start,
-                end_sec=args.end
+                end_sec=args.end,
+                instrument=args.instrument
             )
         except Exception as e:
             print(f"Chord sequence transcription failed: {e}")

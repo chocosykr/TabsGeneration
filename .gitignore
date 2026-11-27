@@ -31,3 +31,8 @@ build/
 
 # Logs
 *.log
+
+# Datasets and Documentation
+datasets/
+docs/
+

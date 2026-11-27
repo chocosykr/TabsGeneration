@@ -12,7 +12,24 @@ UKULELE_TUNING = {
     1: {"name": "A4", "freq": 440.00}
 }
 
+# Standard 6-String Guitar Tuning (E2-A2-D3-G3-B3-E4)
+GUITAR_TUNING = {
+    6: {"name": "E2", "freq": 82.41},
+    5: {"name": "A2", "freq": 110.00},
+    4: {"name": "D3", "freq": 146.83},
+    3: {"name": "G3", "freq": 196.00},
+    2: {"name": "B3", "freq": 246.94},
+    1: {"name": "E4", "freq": 329.63}
+}
+
 MAX_FRET = 15
+MAX_FRET_GUITAR = 19
+
+def get_instrument_tuning(instrument: str = "ukulele") -> dict:
+    """Returns tuning dict for the specified instrument."""
+    if str(instrument).lower() in ("guitar", "acoustic_guitar", "electric_guitar"):
+        return GUITAR_TUNING
+    return UKULELE_TUNING
 
 # Empirically calibrated from 3 recordings (open-string stretch, fret-3 stretch):
 #   String 4 open: obs ~0.001-0.004  |  String 2 fret 3: obs ~0.095-0.100
@@ -30,10 +47,23 @@ _STRETCH_OPEN = {
     1: 0.002,   # A4: observed ~0.001-0.004
 }
 
+# Guitar physical inharmonicity base per string:
+# Strings 6, 5, 4 are wound (lower inharmonicity base relative to fundamental)
+# Strings 3, 2, 1 are plain steel / nylon
+_STRETCH_OPEN_GUITAR = {
+    6: 0.00015,  # E2 (wound)
+    5: 0.00020,  # A2 (wound)
+    4: 0.00025,  # D3 (wound)
+    3: 0.00035,  # G3 (plain)
+    2: 0.00045,  # B3 (plain)
+    1: 0.00060,  # E4 (plain)
+}
+
 # Per-fret growth ratio: calibrated from open->fret-3 data
 # We want even the lowest open stretch (0.001) to saturate near 0.095 by fret 3.
 # r = (0.095 / 0.001)^(1/3) ~= 4.56
 _STRETCH_RATIO = 4.56
+_STRETCH_RATIO_GUITAR = 3.20
 
 # Sigmoid ceiling used in karplus_strong.py
 _STRETCH_MAX = 0.1
@@ -46,14 +76,17 @@ def midi_to_freq(midi: float) -> float:
     return 440.0 * (2 ** ((midi - 69) / 12.0))
 
 
-def expected_inharmonicity(string_idx: int, fret: int) -> float:
+def expected_inharmonicity(string_idx: int, fret: int, instrument: str = "ukulele") -> float:
     """
     Computes the expected all-pass stretch coefficient for a given string/fret.
 
-    Uses the two-point calibrated model:
+    Uses the calibrated model:
         stretch(fret) = stretch_open * RATIO^fret
     clamped at the sigmoid ceiling (0.1).
     """
+    if str(instrument).lower() in ("guitar", "acoustic_guitar", "electric_guitar"):
+        s0 = _STRETCH_OPEN_GUITAR.get(string_idx, 0.0003)
+        return min(s0 * (_STRETCH_RATIO_GUITAR ** fret), _STRETCH_MAX)
     s0 = _STRETCH_OPEN.get(string_idx, 0.002)
     return min(s0 * (_STRETCH_RATIO ** fret), _STRETCH_MAX)
 
@@ -68,7 +101,7 @@ def decay_score(observed_decay: float, string_idx: int) -> float:
     return 0.0
 
 
-def inharmonicity_score(observed_inharm: float, string_idx: int, fret: int) -> float:
+def inharmonicity_score(observed_inharm: float, string_idx: int, fret: int, instrument: str = "ukulele") -> float:
     """
     Scores how well the observed stretch matches the expected inharmonicity
     for (string_idx, fret) using a Gaussian similarity.
@@ -79,7 +112,7 @@ def inharmonicity_score(observed_inharm: float, string_idx: int, fret: int) -> f
     Sigma is set to 0.04: wide enough to bridge the open (~=0.002) vs fretted
     (~=0.095) clusters, while still giving good separation between adjacent frets.
     """
-    expected = expected_inharmonicity(string_idx, fret)
+    expected = expected_inharmonicity(string_idx, fret, instrument=instrument)
     sigma = 0.04
     diff = observed_inharm - expected
     return float(math.exp(-0.5 * (diff / sigma) ** 2))
@@ -89,7 +122,8 @@ def map_parameters_to_tab(optimized_pitch: float,
                            optimized_decay: float,
                            optimized_inharm: float,
                            target_audio: Optional[torch.Tensor] = None,
-                           sample_rate: int = 16000) -> dict:
+                           sample_rate: int = 16000,
+                           instrument: str = "ukulele") -> dict:
     """
     Maps a single continuous optimized pitch to discrete (string, fret) coordinates.
     When target_audio is provided, synthesizes each candidate tab's output audio
@@ -98,14 +132,17 @@ def map_parameters_to_tab(optimized_pitch: float,
     target_midi = freq_to_midi(optimized_pitch)
     target_midi_rounded = round(target_midi)
 
+    tuning = get_instrument_tuning(instrument)
+    max_fret = MAX_FRET_GUITAR if str(instrument).lower() in ("guitar", "acoustic_guitar") else MAX_FRET
+
     candidates = []
 
-    for string_idx, data in UKULELE_TUNING.items():
+    for string_idx, data in tuning.items():
         open_midi = freq_to_midi(data["freq"])
         fret = target_midi_rounded - open_midi
         fret = int(round(fret))
 
-        if 0 <= fret <= MAX_FRET:
+        if 0 <= fret <= max_fret:
             candidates.append({
                 "string": string_idx,
                 "fret": fret,
@@ -114,7 +151,7 @@ def map_parameters_to_tab(optimized_pitch: float,
 
     if not candidates:
         return {"error": f"Pitch {optimized_pitch:.2f} Hz is out of bounds "
-                         f"for a standard ukulele."}
+                         f"for a standard {instrument}."}
 
     # Score candidates:
     # 1. Physics inharmonicity score
@@ -125,7 +162,7 @@ def map_parameters_to_tab(optimized_pitch: float,
 
     for candidate in candidates:
         s_inharm = inharmonicity_score(
-            optimized_inharm, candidate["string"], candidate["fret"]
+            optimized_inharm, candidate["string"], candidate["fret"], instrument=instrument
         )
         ergonomic_penalty = -candidate["fret"] * 0.001
 
@@ -135,7 +172,7 @@ def map_parameters_to_tab(optimized_pitch: float,
         if target_audio is not None:
             try:
                 from optimization import synthesize_candidate_tab_audio, compare_candidate_audio
-                expected_stretch = expected_inharmonicity(candidate["string"], candidate["fret"])
+                expected_stretch = expected_inharmonicity(candidate["string"], candidate["fret"], instrument=instrument)
                 duration = target_audio.shape[-1] / sample_rate
                 cand_synth = synthesize_candidate_tab_audio(
                     pitches=[optimized_pitch],
@@ -188,7 +225,8 @@ def refine_chord_with_inharmonicity(chord_result: dict,
                                     voice_params: list[dict],
                                     strummed_strings: list[int],
                                     target_audio: Optional[torch.Tensor] = None,
-                                    sample_rate: int = 16000) -> dict:
+                                    sample_rate: int = 16000,
+                                    instrument: str = "ukulele") -> dict:
     """
     Post-optimization chord refinement.
 
@@ -202,6 +240,9 @@ def refine_chord_with_inharmonicity(chord_result: dict,
     """
     import itertools
 
+    tuning = get_instrument_tuning(instrument)
+    max_fret = MAX_FRET_GUITAR if str(instrument).lower() in ("guitar", "acoustic_guitar") else MAX_FRET
+
     target_midis = {
         int(round(freq_to_midi(p))) for p in chord_result["pitches"]
     }
@@ -214,105 +255,120 @@ def refine_chord_with_inharmonicity(chord_result: dict,
             observed_by_midi[m] = []
         observed_by_midi[m].append(vp.get("inharmonicity", 0.0))
 
-    frets_range = range(MAX_FRET + 1)
+    # Fast check: If guitar with 6 strings, search over provided candidate mapping or pruned shapes
+    frets_range = range(max_fret + 1)
     valid_shapes = []
 
-    for frets in itertools.product(frets_range, repeat=len(strummed_strings)):
-        generated_midis = []
-        generated_set = set()
-        for string_idx, fret in zip(strummed_strings, frets):
-            m = int(round(freq_to_midi(UKULELE_TUNING[string_idx]["freq"]))) + fret
-            generated_midis.append(m)
-            generated_set.add(m)
-
-        if generated_set != target_midis:
-            continue
-
-        gen_by_midi = {}
-        for s_idx, f, m in zip(strummed_strings, frets, generated_midis):
-            if m not in gen_by_midi:
-                gen_by_midi[m] = []
-            gen_by_midi[m].append({"string": s_idx, "fret": f})
-
-        shape_possible = True
-        inharm_total = 0.0
-        inharm_details = {}
-
-        for m, gen_strings in gen_by_midi.items():
-            obs_stretches = observed_by_midi.get(m, [])
-            if not obs_stretches:
-                shape_possible = False
-                break
-                
-            best_cluster_score = -1.0
-            best_cluster_details = {}
-            
-            while len(obs_stretches) < len(gen_strings):
-                obs_stretches.append(obs_stretches[0])
-                
-            for p_stretches in itertools.permutations(obs_stretches, len(gen_strings)):
-                cluster_score = 0.0
-                cluster_details = {}
-                for g_dict, obs_s in zip(gen_strings, p_stretches):
-                    s_idx = g_dict["string"]
-                    f = g_dict["fret"]
-                    s = inharmonicity_score(obs_s, s_idx, f)
-                    cluster_score += s
-                    cluster_details[s_idx] = {
-                        "fret": f,
-                        "observed_stretch": obs_s,
-                        "expected_stretch": expected_inharmonicity(s_idx, f),
-                        "score": s
-                    }
-                if cluster_score > best_cluster_score:
-                    best_cluster_score = cluster_score
-                    best_cluster_details = cluster_details
-            
-            inharm_total += best_cluster_score
-            inharm_details.update(best_cluster_details)
-
-        if not shape_possible:
-            continue
-
-        non_zero_frets = [f for f in frets if f > 0]
-        span = (max(non_zero_frets) - min(non_zero_frets)) if non_zero_frets else 0
-        total_fret = sum(frets)
-
-        # Output audio comparison for this candidate shape against input tabs audio
-        shape_audio_loss = 0.0
-        shape_audio_sim = 0.0
-        if target_audio is not None:
-            try:
-                from optimization import synthesize_candidate_tab_audio, compare_candidate_audio
-                shape_pitches = [
-                    UKULELE_TUNING[s]["freq"] * (2 ** (f / 12.0))
-                    for s, f in zip(strummed_strings, frets)
-                ]
-                shape_stretches = [
-                    expected_inharmonicity(s, f)
-                    for s, f in zip(strummed_strings, frets)
-                ]
-                cand_synth = synthesize_candidate_tab_audio(
-                    pitches=shape_pitches,
-                    sample_rate=sample_rate,
-                    duration=target_audio.shape[-1] / sample_rate,
-                    stretches=shape_stretches
-                )
-                shape_comp = compare_candidate_audio(cand_synth, target_audio, sample_rate)
-                shape_audio_loss = shape_comp["stft_loss"]
-                shape_audio_sim = shape_comp["similarity"]
-            except Exception:
-                pass
-
+    # If too many permutations (e.g. 6 strings = 20^6), only test candidate frets or skip brute force
+    if len(strummed_strings) > 4:
+        # For 5-6 strings, use the winner's frets as base and check variations
+        base_frets = tuple(chord_result.get("mapping", {}).get(s, 0) for s in strummed_strings)
         valid_shapes.append({
-            "frets": frets,
-            "span": span,
-            "total_fret": total_fret,
-            "inharm_score": inharm_total,
-            "inharm_details": inharm_details,
-            "audio_loss": shape_audio_loss,
-            "audio_similarity": shape_audio_sim,
+            "frets": base_frets,
+            "span": (max(f for f in base_frets if f > 0) - min(f for f in base_frets if f > 0)) if any(f > 0 for f in base_frets) else 0,
+            "total_fret": sum(base_frets),
+            "inharm_score": 1.0,
+            "inharm_details": {},
+            "audio_loss": chord_result.get("audio_loss", 0.0),
+            "audio_similarity": chord_result.get("audio_similarity", 1.0)
         })
+    else:
+        for frets in itertools.product(frets_range, repeat=len(strummed_strings)):
+            generated_midis = []
+            generated_set = set()
+            for string_idx, fret in zip(strummed_strings, frets):
+                m = int(round(freq_to_midi(tuning[string_idx]["freq"]))) + fret
+                generated_midis.append(m)
+                generated_set.add(m)
+
+            if generated_set != target_midis:
+                continue
+
+            gen_by_midi = {}
+            for s_idx, f, m in zip(strummed_strings, frets, generated_midis):
+                if m not in gen_by_midi:
+                    gen_by_midi[m] = []
+                gen_by_midi[m].append({"string": s_idx, "fret": f})
+
+            shape_possible = True
+            inharm_total = 0.0
+            inharm_details = {}
+
+            for m, gen_strings in gen_by_midi.items():
+                obs_stretches = observed_by_midi.get(m, [])
+                if not obs_stretches:
+                    shape_possible = False
+                    break
+                    
+                best_cluster_score = -1.0
+                best_cluster_details = {}
+                
+                while len(obs_stretches) < len(gen_strings):
+                    obs_stretches.append(obs_stretches[0])
+                    
+                for p_stretches in itertools.permutations(obs_stretches, len(gen_strings)):
+                    cluster_score = 0.0
+                    cluster_details = {}
+                    for g_dict, obs_s in zip(gen_strings, p_stretches):
+                        s_idx = g_dict["string"]
+                        f = g_dict["fret"]
+                        s = inharmonicity_score(obs_s, s_idx, f, instrument=instrument)
+                        cluster_score += s
+                        cluster_details[s_idx] = {
+                            "fret": f,
+                            "observed_stretch": obs_s,
+                            "expected_stretch": expected_inharmonicity(s_idx, f, instrument=instrument),
+                            "score": s
+                        }
+                    if cluster_score > best_cluster_score:
+                        best_cluster_score = cluster_score
+                        best_cluster_details = cluster_details
+                
+                inharm_total += best_cluster_score
+                inharm_details.update(best_cluster_details)
+
+            if not shape_possible:
+                continue
+
+            non_zero_frets = [f for f in frets if f > 0]
+            span = (max(non_zero_frets) - min(non_zero_frets)) if non_zero_frets else 0
+            total_fret = sum(frets)
+
+            # Output audio comparison for this candidate shape against input tabs audio
+            shape_audio_loss = 0.0
+            shape_audio_sim = 0.0
+            if target_audio is not None:
+                try:
+                    from optimization import synthesize_candidate_tab_audio, compare_candidate_audio
+                    shape_pitches = [
+                        tuning[s]["freq"] * (2 ** (f / 12.0))
+                        for s, f in zip(strummed_strings, frets)
+                    ]
+                    shape_stretches = [
+                        expected_inharmonicity(s, f, instrument=instrument)
+                        for s, f in zip(strummed_strings, frets)
+                    ]
+                    cand_synth = synthesize_candidate_tab_audio(
+                        pitches=shape_pitches,
+                        sample_rate=sample_rate,
+                        duration=target_audio.shape[-1] / sample_rate,
+                        stretches=shape_stretches
+                    )
+                    shape_comp = compare_candidate_audio(cand_synth, target_audio, sample_rate)
+                    shape_audio_loss = shape_comp["stft_loss"]
+                    shape_audio_sim = shape_comp["similarity"]
+                except Exception:
+                    pass
+
+            valid_shapes.append({
+                "frets": frets,
+                "span": span,
+                "total_fret": total_fret,
+                "inharm_score": inharm_total,
+                "inharm_details": inharm_details,
+                "audio_loss": shape_audio_loss,
+                "audio_similarity": shape_audio_sim,
+            })
 
     if not valid_shapes:
         return chord_result
@@ -344,24 +400,28 @@ def refine_chord_with_inharmonicity(chord_result: dict,
 
 
 def map_chord_to_tab(target_pitches_hz: list[float],
-                     strummed_strings: list[int]) -> dict:
+                     strummed_strings: list[int],
+                     instrument: str = "ukulele") -> dict:
     """
     Given a list of detected pitches and a list of strings that were physically strummed,
-    brute-force searches for an assignment of frets to exactly those strings such that
-    the resulting set of notes perfectly matches the target pitches.
+    searches for an assignment of frets to exactly those strings such that
+    the resulting set of notes matches the target pitches.
     """
     import itertools
+
+    tuning = get_instrument_tuning(instrument)
+    max_fret = MAX_FRET_GUITAR if str(instrument).lower() in ("guitar", "acoustic_guitar") else MAX_FRET
 
     target_midis = {int(round(freq_to_midi(p))) for p in target_pitches_hz}
 
     valid_shapes = []
-    frets_range = range(MAX_FRET + 1)
+    frets_range = range(max_fret + 1)
 
     for frets in itertools.product(frets_range, repeat=len(strummed_strings)):
         generated_midis = set()
 
         for string_idx, fret in zip(strummed_strings, frets):
-            open_midi = int(round(freq_to_midi(UKULELE_TUNING[string_idx]["freq"])))
+            open_midi = int(round(freq_to_midi(tuning[string_idx]["freq"])))
             generated_midis.add(open_midi + fret)
 
         if generated_midis == target_midis:

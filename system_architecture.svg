@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 820" width="800" height="820">
+  <defs>
+    <style>
+      .font { font-family: 'Segoe UI', 'Calibri', Arial, sans-serif; }
+      .title { font-size: 24px; font-weight: 800; fill: #6B2D4E; letter-spacing: 1.5px; }
+      .subtitle { font-size: 15px; font-weight: 600; fill: #9C5A3C; }
+      .box-title { font-size: 19px; font-weight: 700; fill: #3E1F0D; }
+      .box-sub { font-size: 14px; font-weight: 500; fill: #7A4B31; }
+      .box-title-white { font-size: 20px; font-weight: 700; fill: #FFFFFF; }
+      .box-sub-white { font-size: 14px; font-weight: 500; fill: #F9E5F0; }
+      .num-text { font-size: 13px; font-weight: 800; fill: #FFFFFF; }
+      .arrow-label { font-size: 13px; font-weight: 600; fill: #A6521B; }
+      .ref-label { font-size: 13px; font-weight: 600; fill: #7D365C; }
+      .pill-text { font-size: 15px; font-weight: 700; fill: #3E1F0D; }
+      .legend-text { font-size: 14px; font-weight: 600; fill: #5C3A28; }
+    </style>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#E67E22"/>
+    </marker>
+    <marker id="arrow-plum" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#8A3D68"/>
+    </marker>
+  </defs>
+
+  <!-- Outer Card Background -->
+  <rect x="8" y="8" width="784" height="804" rx="26" fill="#FFF8EB" stroke="#E5C8A8" stroke-width="3"/>
+  <rect x="20" y="20" width="760" height="780" rx="20" fill="none" stroke="#E5C8A8" stroke-width="1.5" stroke-dasharray="8 6"/>
+
+  <!-- Header -->
+  <text x="400" y="58" text-anchor="middle" class="font title">PROPOSED SYSTEM ARCHITECTURE</text>
+  <text x="400" y="82" text-anchor="middle" class="font subtitle">Audio-to-Tablature via Sound Matching &amp; Playability Optimization</text>
+
+  <!-- ROW 1: Raw Audio -> 1. Find Note Starts -->
+  <!-- Raw Audio -->
+  <rect x="52" y="108" width="290" height="84" rx="42" fill="#FDEBD0" stroke="#E67E22" stroke-width="2.5" stroke-dasharray="7 5"/>
+  <!-- Mini waveform icon -->
+  <g transform="translate(82, 132)" stroke="#E67E22" stroke-width="4" stroke-linecap="round">
+    <line x1="0" y1="12" x2="0" y2="24"/>
+    <line x1="9" y1="4" x2="9" y2="32"/>
+    <line x1="18" y1="0" x2="18" y2="36"/>
+    <line x1="27" y1="8" x2="27" y2="28"/>
+    <line x1="36" y1="13" x2="36" y2="23"/>
+  </g>
+  <text x="218" y="145" text-anchor="middle" class="font box-title">Raw Audio Input</text>
+  <text x="218" y="169" text-anchor="middle" class="font box-sub">Recording (.wav / .mp3)</text>
+
+  <!-- Arrow Raw -> 1 -->
+  <line x1="342" y1="150" x2="438" y2="150" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="390" y="140" text-anchor="middle" class="font arrow-label">audio</text>
+
+  <!-- 1. Find Note Starts -->
+  <rect x="448" y="108" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="462" cy="118" r="13" fill="#8A3D68"/>
+  <text x="462" y="123" text-anchor="middle" class="font num-text">1</text>
+  <text x="602" y="145" text-anchor="middle" class="font box-title">Find Note Starts</text>
+  <text x="602" y="169" text-anchor="middle" class="font box-sub">Split audio into plucks &amp; strums</text>
+
+  <!-- Arrow 1 -> 2 (curves down-left to Row 2 right, or go top-down S-curve: 1 -> 2 on right? Let's do clean right-to-left on Row 2!) -->
+  <!-- Wait: S-curve: Row 1 L->R (Raw -> 1), then down to Row 2 R->L (2 -> 3) OR Row 2 L->R? -->
+  <!-- Let's do Row 2: 2 on Right, 3 on Left so arrows never cross! -->
+  <line x1="598" y1="192" x2="598" y2="232" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="646" y="216" text-anchor="middle" class="font arrow-label">note slices</text>
+
+  <!-- ROW 2: 3. Generate Fret Positions <- 2. Detect Musical Notes -->
+  <!-- 2. Detect Musical Notes (Right) -->
+  <rect x="448" y="242" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="462" cy="252" r="13" fill="#8A3D68"/>
+  <text x="462" y="257" text-anchor="middle" class="font num-text">2</text>
+  <text x="602" y="279" text-anchor="middle" class="font box-title">Detect Musical Notes</text>
+  <text x="602" y="303" text-anchor="middle" class="font box-sub">Identify pitches &amp; chords</text>
+
+  <!-- Arrow 2 -> 3 (Right to Left) -->
+  <line x1="448" y1="284" x2="362" y2="284" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="405" y="274" text-anchor="middle" class="font arrow-label">notes</text>
+
+  <!-- 3. Generate Fret Positions (Left) -->
+  <rect x="52" y="242" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="66" cy="252" r="13" fill="#8A3D68"/>
+  <text x="66" y="257" text-anchor="middle" class="font num-text">3</text>
+  <text x="206" y="279" text-anchor="middle" class="font box-title">Generate Fret Positions</text>
+  <text x="206" y="303" text-anchor="middle" class="font box-sub">All valid string &amp; fret options</text>
+
+  <!-- Dashed Reference Arrow from Raw Audio (left side) down to Box 5 (Compare with Original) -->
+  <path d="M 52 150 L 28 150 L 28 548 L 44 548" fill="none" stroke="#8A3D68" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow-plum)"/>
+  <text transform="translate(20, 355) rotate(-90)" text-anchor="middle" class="font ref-label">original recording reference</text>
+
+  <!-- Arrow 3 -> 4 (Straight down on Left) -->
+  <line x1="202" y1="326" x2="202" y2="366" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="258" y="352" text-anchor="middle" class="font arrow-label">candidate tabs</text>
+
+  <!-- Arrow 3 -> 6 (Branch from y=346 to Right) -->
+  <path d="M 202 346 L 598 346 L 598 366" fill="none" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="485" y="338" text-anchor="middle" class="font arrow-label">candidate tabs</text>
+
+  <!-- ROW 3: 4. Simulate String Sound (Left) & 6. Score Hand Comfort (Right) -->
+  <!-- 4. Simulate String Sound -->
+  <rect x="52" y="376" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="66" cy="386" r="13" fill="#8A3D68"/>
+  <text x="66" y="391" text-anchor="middle" class="font num-text">4</text>
+  <text x="206" y="413" text-anchor="middle" class="font box-title">Simulate String Sound</text>
+  <text x="206" y="437" text-anchor="middle" class="font box-sub">Synthesize audio for each option</text>
+
+  <!-- 6. Score Hand Comfort -->
+  <rect x="448" y="376" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="462" cy="386" r="13" fill="#8A3D68"/>
+  <text x="462" y="391" text-anchor="middle" class="font num-text">6</text>
+  <text x="602" y="413" text-anchor="middle" class="font box-title">Score Hand Comfort</text>
+  <text x="602" y="437" text-anchor="middle" class="font box-sub">Check finger stretch &amp; fret shifts</text>
+
+  <!-- Arrow 4 -> 5 (Straight down on Left) -->
+  <line x1="202" y1="460" x2="202" y2="496" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="255" y="483" text-anchor="middle" class="font arrow-label">synth audio</text>
+
+  <!-- Arrow 6 -> 7 (Straight down on Right) -->
+  <line x1="598" y1="460" x2="598" y2="496" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="660" y="483" text-anchor="middle" class="font arrow-label">comfort score</text>
+
+  <!-- ROW 4: 5. Compare with Original (Left) -> 7. Pick Best Tab (Right) -->
+  <!-- 5. Compare with Original -->
+  <rect x="52" y="506" width="300" height="84" rx="16" fill="#FCE5C0" stroke="#C88A55" stroke-width="2"/>
+  <circle cx="66" cy="516" r="13" fill="#8A3D68"/>
+  <text x="66" y="521" text-anchor="middle" class="font num-text">5</text>
+  <text x="206" y="543" text-anchor="middle" class="font box-title">Compare with Original</text>
+  <text x="206" y="567" text-anchor="middle" class="font box-sub">Measure sound similarity</text>
+
+  <!-- Arrow 5 -> 7 (Left to Right) -->
+  <line x1="352" y1="548" x2="438" y2="548" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="395" y="538" text-anchor="middle" class="font arrow-label">sound</text>
+  <text x="395" y="566" text-anchor="middle" class="font arrow-label">score</text>
+
+  <!-- 7. Pick Best Tab (Plum Highlight) -->
+  <rect x="448" y="506" width="300" height="84" rx="16" fill="#8A3D68" stroke="#6B2D4E" stroke-width="2.5"/>
+  <text x="598" y="543" text-anchor="middle" class="font box-title-white">7. Pick Best Tab</text>
+  <text x="598" y="567" text-anchor="middle" class="font box-sub-white">Balance sound match + comfort</text>
+
+  <!-- Arrow 7 -> 8 (Down to bottom output container) -->
+  <line x1="598" y1="590" x2="598" y2="626" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="646" y="613" text-anchor="middle" class="font arrow-label">best tab</text>
+
+  <!-- ROW 5: 8. Display & Export Tabs -->
+  <rect x="52" y="636" width="696" height="104" rx="18" fill="#FDEBD0" stroke="#E67E22" stroke-width="3"/>
+  <circle cx="68" cy="648" r="13" fill="#8A3D68"/>
+  <text x="68" y="653" text-anchor="middle" class="font num-text">8</text>
+  <text x="400" y="670" text-anchor="middle" class="font box-title">Interactive Display &amp; Tab Export</text>
+
+  <!-- Three Output Pills -->
+  <rect x="82" y="688" width="190" height="36" rx="10" fill="#FCE0C0" stroke="#C88A55" stroke-width="1.8"/>
+  <text x="177" y="712" text-anchor="middle" class="font pill-text">Text Tablature</text>
+
+  <rect x="305" y="688" width="190" height="36" rx="10" fill="#FCE0C0" stroke="#C88A55" stroke-width="1.8"/>
+  <text x="400" y="712" text-anchor="middle" class="font pill-text">Visual Fretboard</text>
+
+  <rect x="528" y="688" width="190" height="36" rx="10" fill="#FCE0C0" stroke="#C88A55" stroke-width="1.8"/>
+  <text x="623" y="712" text-anchor="middle" class="font pill-text">Synced Playback</text>
+
+  <!-- Legend -->
+  <line x1="90" y1="772" x2="140" y2="772" stroke="#E67E22" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <text x="152" y="777" class="font legend-text">Data flow</text>
+
+  <line x1="285" y1="772" x2="335" y2="772" stroke="#8A3D68" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow-plum)"/>
+  <text x="347" y="777" class="font legend-text">Original audio reference</text>
+
+  <rect x="555" y="761" width="24" height="22" rx="5" fill="#8A3D68"/>
+  <text x="589" y="777" class="font legend-text">Final decision stage</text>
+</svg>
