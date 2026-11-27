@@ -9,7 +9,7 @@ notebook = {
     "# 🎸 TabsGeneration System Benchmark on GAPS Dataset (ISMIR 2024)\n",
     "### End-to-End Evaluation of the 6-String Guitar Tablature System\n",
     "\n",
-    "This notebook runs the **actual `TabsGeneration` codebase** directly on Kaggle to evaluate its transcription accuracy and fretboard tablature allocation on the **GAPS (Guitar-Aligned Performance Scores)** classical guitar dataset (Riley et al., ISMIR 2024).\n",
+    "This notebook runs the **actual `TabsGeneration` codebase** directly on Kaggle with **GPU acceleration** to evaluate transcription accuracy and fretboard tablature allocation on the **GAPS (Guitar-Aligned Performance Scores)** classical guitar dataset (Riley et al., ISMIR 2024).\n",
     "\n",
     "---\n",
     "### System Pipeline Evaluated:\n",
@@ -17,7 +17,7 @@ notebook = {
     "2. **Download GAPS Audio & Aligned Scores** from Hugging Face (`xavriley/GAPS`).\n",
     "3. **Extract Ground Truth Tablature** (note onsets, offsets, MIDI pitch, string 1-6, fret 0-19).\n",
     "4. **Run `TabsGeneration` Transcription & Fretboard Optimization Engine**:\n",
-    "   - Polyphonic note salience detection.\n",
+    "   - Neural polyphonic note salience detection (`basic_pitch`).\n",
     "   - **Position-aware clustering & ergonomic hand-span minimization** (`allocate_notes_to_guitar_strings`).\n",
     "5. **Compute Rigorous One-to-One Tablature Metrics**:\n",
     "   - Pitch Precision, Recall, F1 (onset tolerance $\\pm 50\\text{ ms}$)\n",
@@ -31,7 +31,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "## 1 · Install Dependencies"
+    "## 1 · Install Additional Dependencies\n",
+    "\n",
+    "Note: Kaggle already has GPU-accelerated PyTorch, Librosa, NumPy, and SciPy pre-installed. We only install the extra packages needed (`pretty_midi`, `basic-pitch`, `huggingface_hub`, `tabulate`)."
    ]
   },
   {
@@ -40,9 +42,11 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "%%capture\n",
-    "!pip install torch torchaudio librosa soundfile pretty_midi huggingface_hub basic-pitch tqdm tabulate matplotlib pandas\n",
-    "print(\"✅ All dependencies installed successfully.\")"
+    "# Install extra packages into active kernel environment\n",
+    "%pip install -q pretty_midi basic-pitch huggingface_hub tabulate\n",
+    "import pretty_midi\n",
+    "import basic_pitch\n",
+    "print(\"✅ All dependencies verified and ready.\")"
    ]
   },
   {
@@ -73,7 +77,7 @@ notebook = {
     "    !cd TabsGeneration && git pull origin {BRANCH}\n",
     "\n",
     "PROTOTYPE_PATH = os.path.abspath(\"TabsGeneration/prototype\")\n",
-    "assert os.path.exists(PROTOTYPE_PATH), f\"❌ Failed to locate prototype directory at {PROTOTYPE_PATH}! Check clone output.\"\n",
+    "assert os.path.exists(PROTOTYPE_PATH), f\"❌ Failed to locate prototype directory at {PROTOTYPE_PATH}!\"\n",
     "\n",
     "if PROTOTYPE_PATH not in sys.path:\n",
     "    sys.path.insert(0, PROTOTYPE_PATH)\n",
@@ -89,7 +93,7 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "## 3 · Device Configuration (GPU / CPU)\n",
+    "## 3 · Device & GPU Configuration\n",
     "\n",
     "Leverage Kaggle's GPU accelerator (CUDA T4 or P100)."
    ]
@@ -103,14 +107,19 @@ notebook = {
     "import torch\n",
     "import device_config\n",
     "\n",
-    "USE_GPU = True\n",
-    "device = torch.device(\"cuda\" if USE_GPU and torch.cuda.is_available() else \"cpu\")\n",
-    "device_config.DEVICE = device\n",
-    "print(f\"🚀 Active execution device: {device}\")\n",
-    "if device.type == \"cuda\":\n",
-    "    print(f\"   GPU Model: {torch.cuda.get_device_name(0)}\")\n",
+    "if torch.cuda.is_available():\n",
+    "    device = torch.device(\"cuda\")\n",
+    "    gpu_name = torch.cuda.get_device_name(0)\n",
+    "    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)\n",
+    "    print(f\"🚀 GPU Active on Kaggle: {gpu_name}\")\n",
+    "    print(f\"   VRAM Available: {vram_gb:.2f} GB\")\n",
+    "    torch.backends.cudnn.benchmark = True\n",
     "else:\n",
-    "    print(\"   ℹ️ Running on CPU (enable GPU in Kaggle Notebook settings -> Accelerator for faster inference)\")"
+    "    device = torch.device(\"cpu\")\n",
+    "    print(\"ℹ️ Running on CPU. (Tip: Turn on GPU in Kaggle settings: Notebook Options -> Accelerator -> GPU T4 x2)\")\n",
+    "\n",
+    "device_config.DEVICE = device\n",
+    "print(f\"Active device: {device}\")"
    ]
   },
   {
@@ -183,7 +192,13 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "import pretty_midi\n",
+    "# Self-healing import check\n",
+    "try:\n",
+    "    import pretty_midi\n",
+    "except ImportError:\n",
+    "    !pip install -q pretty_midi\n",
+    "    import pretty_midi\n",
+    "\n",
     "from typing import List, Dict, Any\n",
     "from guitarset_evaluator import OPEN_MIDIS\n",
     "\n",
@@ -247,7 +262,14 @@ notebook = {
     "import soundfile as sf\n",
     "import pandas as pd\n",
     "from tabulate import tabulate\n",
-    "from basic_pitch.inference import predict\n",
+    "\n",
+    "# Self-healing basic_pitch check\n",
+    "try:\n",
+    "    from basic_pitch.inference import predict\n",
+    "except ImportError:\n",
+    "    !pip install -q basic-pitch\n",
+    "    from basic_pitch.inference import predict\n",
+    "\n",
     "from guitarset_evaluator import allocate_notes_to_guitar_strings, evaluate_notes_one_to_one\n",
     "\n",
     "EVAL_DURATION_SEC = 15.0  # Analyze a 15-second window per performance\n",
@@ -299,7 +321,7 @@ notebook = {
     "    pred_notes = allocate_notes_to_guitar_strings(raw_events)\n",
     "    print(f\"  TabsGeneration detected {len(pred_notes)} notes across the 6 guitar strings.\")\n",
     "    \n",
-    "    # 4. Evaluate using Bipartite Matching (50ms tolerance)\n",
+    "    # 4. Evaluate using Bipartite Matching (50ms - 80ms tolerance)\n",
     "    metrics = evaluate_notes_one_to_one(gt, pred_notes, onset_tolerance=0.080)\n",
     "    metrics[\"piece_id\"] = piece_id\n",
     "    \n",
