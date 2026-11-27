@@ -33,7 +33,7 @@ notebook = {
    "source": [
     "## 1 · Install Dependencies\n",
     "\n",
-    "We install `basic-pitch`, `mido`, `huggingface_hub`, and `tabulate`. Pre-installed packages (`torch`, `librosa`, `numpy`) are preserved."
+    "We install helper wheels, then install `pretty_midi` and `basic-pitch` with `--no-deps` to bypass pip's redundant NumPy source-compilation check."
    ]
   },
   {
@@ -42,13 +42,18 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# 1. Install basic-pitch and pure-python MIDI utilities (guaranteed binary wheels, no compilation)\n",
-    "!pip install -q basic-pitch huggingface_hub tabulate mido\n",
+    "# 1. Install pre-compiled binary dependencies (fast, no compilation)\n",
+    "!pip install -q mido six resampy mir-eval huggingface_hub tabulate\n",
     "\n",
-    "# 2. Optional: install pretty_midi without build isolation so it links to Kaggle's existing NumPy\n",
-    "!pip install -q --no-deps --no-build-isolation pretty_midi || true\n",
+    "# 2. Install pretty_midi and basic_pitch with --no-deps (uses Kaggle's installed NumPy/PyTorch/Librosa directly)\n",
+    "!pip install --no-deps pretty_midi\n",
+    "!pip install --no-deps basic-pitch\n",
     "\n",
-    "print(\"✅ Packages installed and verified.\")"
+    "# Verify imports\n",
+    "import pretty_midi\n",
+    "import basic_pitch\n",
+    "from basic_pitch.inference import predict\n",
+    "print(\"✅ Both pretty_midi and basic_pitch successfully imported and ready.\")"
    ]
   },
   {
@@ -185,7 +190,7 @@ notebook = {
    "source": [
     "## 5 · Ground Truth Note Extractor\n",
     "\n",
-    "Loads time-aligned note annotations from GAPS aligned MIDI files, mapping pitches to canonical guitar strings and frets. Supports both `pretty_midi` and standard `mido`."
+    "Loads time-aligned note annotations from GAPS aligned MIDI files, mapping pitches to canonical guitar strings and frets."
    ]
   },
   {
@@ -207,7 +212,7 @@ notebook = {
     "            for n in inst.notes:\n",
     "                events.append((float(n.start), float(n.end), int(n.pitch)))\n",
     "        return events\n",
-    "    except ImportError:\n",
+    "    except Exception:\n",
     "        import mido\n",
     "        mid = mido.MidiFile(midi_path)\n",
     "        events = []\n",
